@@ -33,16 +33,25 @@ class SimShooter(object):
 
     # -- pulse / command interface ---------------------------------------
     def _publish(self, text):
+        """Publish one command; return the error string, or None on success."""
         try:
             self._pub.publish(String(text))
-        except Exception:
-            pass
+            return None
+        except Exception as e:
+            return str(e)
 
     def stop_pulse(self):
-        """Publish ``stopshoot`` if a pulse is still active (idempotent)."""
-        if self._pulse_active:
-            self._publish('stopshoot')
-            self._pulse_active = False
+        """Publish ``stopshoot`` if a pulse is still active (idempotent).
+
+        Returns the error string if the stop command could not be published,
+        or None on success / when there was no active pulse. The pulse flag is
+        cleared either way, so a failed stop never retries forever.
+        """
+        if not self._pulse_active:
+            return None
+        err = self._publish('stopshoot')
+        self._pulse_active = False
+        return err
 
     def _wait(self, seconds, deadline):
         """Wait ``seconds``, bounded by ``deadline`` and shutdown.
@@ -92,11 +101,19 @@ class SimShooter(object):
             return self._feedback(run_id, waypoint, target_id, shot_id,
                                   'timeout', 'timeout')
 
-        self._publish('shoot')
+        start_err = self._publish('shoot')
+        if start_err is not None:
+            # The start command never went out: nothing was fired, and a shot
+            # that could not be started is never reported as success.
+            return self._feedback(run_id, waypoint, target_id, shot_id,
+                                  'failed', 'publish shoot failed: %s' %
+                                  start_err)
+
         self._pulse_active = True
+        stop_err = None
         try:
             pulse_status = self._wait(self.cfg['pulse_duration'], deadline)
-            self.stop_pulse()
+            stop_err = self.stop_pulse()
             if pulse_status != 'ok':
                 return self._feedback(run_id, waypoint, target_id, shot_id,
                                       pulse_status, pulse_status)
@@ -106,16 +123,20 @@ class SimShooter(object):
                 return self._feedback(run_id, waypoint, target_id, shot_id,
                                       delay_status, delay_status)
         finally:
-            self.stop_pulse()
+            stop_err = self.stop_pulse() or stop_err
 
         # Re-check after the waits: an interrupt/timeout must not inherit the
-        # configured success=true.
+        # configured success=true, and a failed stop command is not success.
         if is_shutdown():
             return self._feedback(run_id, waypoint, target_id, shot_id,
                                   'interrupted', 'interrupted')
         if wall_time() >= deadline:
             return self._feedback(run_id, waypoint, target_id, shot_id,
                                   'timeout', 'timeout')
+        if stop_err is not None:
+            return self._feedback(run_id, waypoint, target_id, shot_id,
+                                  'failed', 'publish stopshoot failed: %s' %
+                                  stop_err)
         if not self.cfg['success']:
             return self._feedback(run_id, waypoint, target_id, shot_id,
                                   'failed', self.cfg['failure_reason'])

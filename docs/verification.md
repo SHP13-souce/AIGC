@@ -438,3 +438,50 @@ Windows 重新检查（本轮修复，均已实际执行；用简单替身 stub 
 - [ ] `task_timeout` 覆盖整项任务（含模拟脉冲/反馈）；各阶段 shutdown→130 并结束脉冲；非法任务配置→退出 1 且无转向/击打
 - [ ] `execute_tasks=true` 三点任务 + `finish` 全流程退出码 0、记录 COMPLETED；`execute_tasks=false` 原纯导航流程不回归
 
+---
+
+## 第六轮：修复稳定帧重置、发布异常与清理期中断
+
+本轮**只修复第五轮（第四轮任务）代码，不新增比赛功能**。保留模块、AR 图案、场地、导航接口与已通过逻辑不变。
+
+起始（基线）commit：`3a51e441a8b84fe014b0ac48afbf7c33347a8450`
+
+> 本轮只做一次本地提交；**未在 Ubuntu 实际运行，全程仿真尚未跑通**。仍然不声称 Gazebo 已正确显示或完整流程已跑通。
+
+### A. 本轮修复内容（第六轮）
+
+1. **连续稳定帧判定**（`task_executor.py` `_search_align`）：上一版在「已对准但里程计不稳」时保留 `stable` 计数，导致「停稳→移动→停稳→移动→停稳」仍会累计到 `stable_frames` 并触发射击。已改为：里程计超速、失效或过期（`_odom_stable()` 为假）时清零 `stable`，恢复后必须重新累计连续 `stable_frames` 个**新图像帧**（时间戳严格递增）均对准且停稳才击发。保留同帧不重复计数、倒退帧不算新帧的规则（`last_counted` 不清零）。
+
+2. **射击发布异常**（`sim_shooter.py`）：上一版 `_publish` 吞掉所有异常，`Publisher.publish` 恒抛异常时 `shoot` 仍返回 `success=true`。已改为：`_publish` 返回错误信息；`shoot` 起始命令发布失败→`failed`（未触发、不报成功）；`stopshoot` 发布失败→`failed`；`stop_pulse` 无论成败都清 `_pulse_active`（清理有限、不无限重试）；`try/finally` 仍保证异常路径尝试结束脉冲。
+
+3. **清理期间中断**（`task_executor.py` `execute`）：上一版 `execute` 的 `finally` 停车期间若发生 shutdown，会被先前「did not settle」等普通结果掩盖，任务管理器最终返回 `(2, FAILED, did not settle)`。已改为：`finally` 清理后检查 `is_shutdown()`，若在清理期间发生 shutdown，统一把结果覆盖为 `interrupted`，优先于普通失败/超时/skip；任务管理器据此退出 130 / STOPPED。
+
+### B. Windows 已实际执行的检查（第六轮）
+
+| # | 检查项 | 命令 / 方法 | 结果 |
+| --- | --- | --- | --- |
+| 1 | 全部 Python 语法 | `python -m py_compile`（task_executor.py、sim_shooter.py、mission_manager.py、navigation_client.py、regression_test.py） | 通过 |
+| 2 | 集中回归（替身 + 可控时钟） | `python tools/regression_test.py`，**78 项断言全部通过** | 通过 |
+| 3 | 第一轮驼峰参数未改回 | grep 核对 `commandTopic` 等仍为驼峰 | 通过 |
+| 4 | UTF-8 / LF、`git diff --check` | 逐文件 + 空白检查 | 通过 |
+
+### C. 新增复现用例（`tools/regression_test.py`，不依赖 ROS，**不代表 ROS 实际运行通过**）
+
+正向用例继续通过真实检测/里程计回调喂入数据，运行真实过滤、计数与最终击打判断，关键判定未替换为固定 True：
+
+- [x] **交替停稳/移动不能累计成功**：`(停稳, 移动, 停稳, 移动, 停稳)` 脚本化喂入 → 返回 `timeout`（不击发）
+- [x] **随后连续合格新帧才允许射击**：一次移动清零后，连续 3 个递增新图像帧均对准且停稳 → 返回 `success`
+- [x] **shoot 发布异常**：`Publisher.publish` 恒抛异常 → `failed`、reason 含 `shoot`、无命令上达、不启动脉冲
+- [x] **stopshoot 发布异常**：起始成功、停止抛异常 → `failed`、reason 含 `stopshoot`、脉冲标志清除、`shoot` 命令恰好一次
+- [x] **清理期 shutdown（任务层）**：初始停车失败后 `finally` 停车期间 shutdown → 任务返回 `interrupted`、无 `shoot`
+- [x] **清理期 shutdown（任务管理器层）**：同一场景经 `_run_task_waypoint` → 退出 130 / STOPPED（优先于 `failure_policy=skip`）
+
+### D. 待 Ubuntu 执行的验证（第六轮）
+
+以下全部**待执行**，本轮不以下列项目通过作为提交前提；**未在 Ubuntu 实际运行，全程仿真尚未跑通**：
+
+- [ ] 稳定帧在里程计超速/失效/过期时清零、恢复后需连续合格新帧才击发（实车行为）
+- [ ] 真实 `Publisher.publish` 异常路径（开始/停止命令失败均不报成功、脉冲被有限清理）
+- [ ] 任务清理期间 shutdown → 任务 `interrupted`、任务管理器退出 130 / STOPPED（优先于 skip）
+- [ ] `execute_tasks=true` 三点任务 + `finish` 全流程退出码 0；`execute_tasks=false` 原纯导航流程不回归
+

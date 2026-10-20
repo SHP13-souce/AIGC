@@ -9,7 +9,7 @@ stable counting and pre-shoot firing gate. Positive task tests feed data
 through the real ``_on_markers`` / ``_on_odom`` callbacks and run the real code
 path; the key judgments are NOT stubbed to True.
 
-Coverage (12 groups):
+Coverage (16 groups):
   0  marker patterns / committed PNG / map PGM consistent
   1  detection freshness (zero / pre-task / backward-stale / stale rejected)
   2  stable counting (same-frame no double count; A,B,A != 3)
@@ -23,6 +23,10 @@ Coverage (12 groups):
   10 normal task shoots once (simulated success, hit=null)
   11 navigation regression (nav-only / retry / skip / cancel-confirm / LOST /
      interrupt)
+  12 task-param validation
+  13 stability reset on movement (alternating settle/move never accumulates)
+  14 shoot/stopshoot publish failures -> failed, not success
+  15 shutdown during cleanup -> interrupted / mission 130 STOPPED
 
 Exit code 0 means all checks passed.
 """
@@ -1023,6 +1027,153 @@ def test_param_validation():
 
 
 # --------------------------------------------------------------------------
+# Group 13: stability reset on movement (alternating settle/move)
+# --------------------------------------------------------------------------
+def _run_script(e, script, deadline_after):
+    """Feed a scripted (marker_stamp, odom_linear_x) pair per align iteration."""
+    seq = list(script)
+
+    def scripted_sleep(seconds):
+        CLOCK.now += seconds
+        if seq:
+            stamp, lin = seq.pop(0)
+            e._on_odom(make_odom(CLOCK.rostime, lin=lin))
+            e._on_markers(make_markers([make_marker(0, stamp, x=0.0, z=1.0)]))
+        else:
+            e._on_odom(make_odom(CLOCK.rostime))
+            e._on_markers(make_markers([]))
+
+    e._interruptible_sleep = scripted_sleep
+    e._task_start_ros = Time(0.0)
+    return e._search_align(0, deadline=CLOCK.now + deadline_after)
+
+
+def test_stability_reset():
+    print('[13] stability reset on movement')
+    reset()
+    CLOCK.rostime = 100.0
+
+    # Alternating settled/moving must NOT accumulate to stable_frames=3.
+    e = make_executor()
+    res = _run_script(e, [
+        (99.70, 0.0),   # settled -> 1
+        (99.72, 0.5),   # moving  -> reset to 0
+        (99.74, 0.0),   # settled -> 1
+        (99.76, 0.5),   # moving  -> reset to 0
+        (99.78, 0.0),   # settled -> 1
+    ], deadline_after=1.0)
+    check(res == TASK_TIMEOUT,
+          'alternating settle/move never accumulates success')
+
+    # After a move resets the run, three consecutive settled NEW frames allow a
+    # shot. (Fresh clock: the timeout's _stop() above advanced the ROS clock.)
+    reset()
+    CLOCK.rostime = 100.0
+    e = make_executor()
+    res = _run_script(e, [
+        (99.70, 0.0),   # settled -> 1
+        (99.72, 0.5),   # moving  -> reset to 0
+        (99.74, 0.0),   # settled -> 1
+        (99.76, 0.0),   # settled -> 2
+        (99.78, 0.0),   # settled -> 3 -> success
+    ], deadline_after=1.0)
+    check(res == TASK_SUCCESS,
+          'consecutive settled new frames after a move allow shooting')
+
+
+# --------------------------------------------------------------------------
+# Group 14: shoot/stopshoot publish failures -> failed, not success
+# --------------------------------------------------------------------------
+def test_publish_failure():
+    print('[14] shoot/stopshoot publish failures')
+    reset()
+    CLOCK.now = 100.0
+
+    # 'shoot' publish always raises.
+    ss = SimShooter({'topic': '/shoot', 'pulse_duration': 0.2, 'delay': 0.1,
+                     'success': True, 'failure_reason': 'x'})
+
+    def boom(_msg):
+        raise RuntimeError('publish down')
+
+    ss._pub.publish = boom
+    res = ss.shoot('r', 'w', 0, 'sid', deadline=CLOCK.now + 10.0)
+    check(res['status'] == 'failed' and not res['success'],
+          'shoot publish failure -> failed, not success')
+    check('shoot' in res['reason'],
+          'shoot publish failure recorded in reason')
+    check(published_data('/shoot') == [], 'no command reached the wire')
+    check(ss._pulse_active is False, 'no pulse started on start failure')
+
+    # 'stopshoot' publish raises: start succeeds, stop fails.
+    reset()
+    CLOCK.now = 100.0
+    ss = SimShooter({'topic': '/shoot', 'pulse_duration': 0.2, 'delay': 0.1,
+                     'success': True, 'failure_reason': 'x'})
+    real_publish = ss._pub.publish
+
+    def fail_stop(msg):
+        if getattr(msg, 'data', '') == 'stopshoot':
+            raise RuntimeError('stop down')
+        return real_publish(msg)
+
+    ss._pub.publish = fail_stop
+    res = ss.shoot('r', 'w', 0, 'sid', deadline=CLOCK.now + 10.0)
+    check(res['status'] == 'failed' and not res['success'],
+          'stopshoot publish failure -> failed, not success')
+    check('stopshoot' in res['reason'],
+          'stopshoot publish failure recorded in reason')
+    check(ss._pulse_active is False, 'pulse inactive after failed stop')
+    check(published_data('/shoot').count('shoot') == 1,
+          'exactly one shoot command reached the wire')
+
+
+# --------------------------------------------------------------------------
+# Group 15: shutdown during cleanup -> interrupted / mission 130 STOPPED
+# --------------------------------------------------------------------------
+def test_cleanup_interrupt():
+    print('[15] shutdown during cleanup')
+    reset()
+    CLOCK.now = 100.0
+    CLOCK.rostime = 100.0
+
+    def setup_executor():
+        e = make_executor()
+        # Settle runs on the clock only (no hooks), so it times out to
+        # 'not_settled'; shutdown then lands inside the finally _stop().
+        def fast(seconds):
+            CLOCK.now += seconds
+        e._interruptible_sleep = fast
+        return e
+
+    # (a) task-level: settle fails, shutdown lands during the finally _stop().
+    e = setup_executor()
+    SLEEP_HOOKS.append(lambda: setattr(CLOCK, 'shutdown', True))
+    res = e.execute('r', 'task_1', 0, allow_shot=True)
+    SLEEP_HOOKS[:] = []
+    check(res['status'] == TASK_INTERRUPTED,
+          'task returns interrupted when shutdown lands during cleanup')
+    check(published_data('/shoot') == [], 'no shoot on cleanup shutdown')
+    CLOCK.shutdown = False
+
+    # (b) mission-level: that interrupted result exits 130 / STOPPED even under
+    #     failure_policy=skip.
+    runner = mission_manager.MissionRunner(_mission_cfg(
+        execute_tasks=True, failure_policy='skip'))
+    runner.task_cfg = task_cfg()
+    runner.task_executor = setup_executor()
+    SLEEP_HOOKS.append(lambda: setattr(CLOCK, 'shutdown', True))
+    wp = {'name': 'task_1', 'kind': 'task', 'x': 0.0, 'y': 0.0, 'yaw': 0.0,
+          'target_id': 0}
+    ret = runner._run_task_waypoint(wp, 1)
+    SLEEP_HOOKS[:] = []
+    CLOCK.shutdown = False
+    check(ret is not None and ret[0] == 130 and
+          ret[1] == mission_manager.STATUS_STOPPED,
+          'cleanup shutdown -> mission exits 130 / STOPPED (beats skip)')
+
+
+# --------------------------------------------------------------------------
 def main():
     test_static_data()
     test_detection_freshness()
@@ -1037,6 +1188,9 @@ def main():
     test_normal_flow()
     test_navigation_regression()
     test_param_validation()
+    test_stability_reset()
+    test_publish_failure()
+    test_cleanup_interrupt()
 
     print('')
     if FAILURES:

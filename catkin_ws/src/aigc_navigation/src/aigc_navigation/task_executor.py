@@ -259,7 +259,13 @@ class TaskExecutor(object):
                     if stable >= stable_frames:
                         return TASK_SUCCESS
                 else:
-                    # Aligned but not yet settled: hold progress, keep stopped.
+                    # Aligned but the chassis is moving / odom stale, invalid
+                    # or missing: the run of stable frames is broken. Clear the
+                    # count (but keep last_counted so a same-frame re-read and a
+                    # backward frame still cannot double-count); the robot must
+                    # re-accumulate stable_frames consecutive *new*
+                    # aligned-and-settled frames before a shot.
+                    stable = 0
                     self._publish_twist(0.0, 0.0)
 
             self._interruptible_sleep(period)
@@ -328,29 +334,40 @@ class TaskExecutor(object):
         self._odom_stamp = None
 
         deadline = wall_time() + self.cfg['task_timeout']
+        result = None
         try:
             settled = self._stop_and_settle(self.cfg['settle_timeout'],
                                             deadline)
             if settled == 'interrupted':
-                return self._result(TASK_INTERRUPTED, False, None,
-                                    'interrupted while settling')
-            if settled == 'timeout':
-                return self._result(TASK_TIMEOUT, False, None,
-                                    'timeout while settling')
-            if settled != 'ok':
-                return self._result(TASK_FAILED, False, None, 'did not settle')
-
-            status = self._search_align(target_id, deadline)
-            if status != TASK_SUCCESS:
-                return self._result(status, False, None,
-                                    _REASON_BY_STATUS.get(status, ''))
-
-            return self._final_gate_and_shoot(run_id, waypoint, target_id,
-                                              allow_shot, deadline)
+                result = self._result(TASK_INTERRUPTED, False, None,
+                                      'interrupted while settling')
+            elif settled == 'timeout':
+                result = self._result(TASK_TIMEOUT, False, None,
+                                      'timeout while settling')
+            elif settled != 'ok':
+                result = self._result(TASK_FAILED, False, None,
+                                      'did not settle')
+            else:
+                status = self._search_align(target_id, deadline)
+                if status != TASK_SUCCESS:
+                    result = self._result(status, False, None,
+                                          _REASON_BY_STATUS.get(status, ''))
+                else:
+                    result = self._final_gate_and_shoot(
+                        run_id, waypoint, target_id, allow_shot, deadline)
         finally:
             # Always stop turning and end any started pulse.
             self._stop()
             self._shooter.stop_pulse()
+
+        # A shutdown that lands during the cleanup above is still an
+        # interrupt, and takes priority over a prior failure/timeout/skip.
+        if is_shutdown() and result is not None and \
+                result['status'] != TASK_INTERRUPTED:
+            result = self._result(TASK_INTERRUPTED,
+                                  result.get('aligned', False), None,
+                                  'interrupted during cleanup')
+        return result
 
     def cleanup(self):
         self._stop()
