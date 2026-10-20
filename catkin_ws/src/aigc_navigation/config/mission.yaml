@@ -1,0 +1,42 @@
+# Waypoint mission configuration. mission.launch loads this file into the
+# mission_manager node's private namespace.
+#
+# These are TEST navigation coordinates for the current test.world, NOT the
+# official competition waypoints.
+
+frame_id: map
+
+# All timeouts are WALL-clock seconds (independent of the simulated /clock).
+ready_timeout: 30.0    # total wait for navigation readiness
+server_timeout: 10.0   # move_base action server connection
+goal_timeout: 60.0     # per-attempt goal execution
+cancel_timeout: 3.0    # wait for cancellation confirmation after a timeout
+
+max_retries: 1         # at most 1 retry after the first failure (2 tries total)
+failure_policy: stop   # stop | skip
+dwell_time: 0.5        # stay at a task point before leaving (seconds)
+
+waypoints:
+  - name: task_1
+    kind: task
+    x: 1.2
+    y: 0.0
+    yaw: 1.57079632679
+
+  - name: task_2
+    kind: task
+    x: 1.2
+    y: 1.0
+    yaw: 3.14159265359
+
+  - name: task_3
+    kind: task
+    x: -1.0
+    y: 1.0
+    yaw: -1.57079632679
+
+  - name: finish
+    kind: finish
+    x: -1.0
+    y: -1.0
+    yaw: 0.0

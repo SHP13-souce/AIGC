@@ -209,3 +209,75 @@ Windows 重新检查（本轮，均已实际执行；用简单替身 stub 验证
 - [x] 服务未连接 → 退出 1，零发送
 - [x] 执行超时 → 退出 2，发送一次并取消
 - [x] 成功 → 退出 0，不取消
+
+---
+
+## 第三轮：全程航点导航与比赛主流程骨架
+
+本轮范围：航点配置、顺序导航、任务点接口、失败重试、超时/中断处理、运行记录、launch 文件、共享模块 `navigation_client`、`send_goal.py` 重构。
+
+起始 commit：`df50734687b6eaace91f1e63cd4a3499ad5847b7`
+
+> 本轮只做一次本地提交；**未在 Ubuntu 实际运行，全程仿真尚未跑通**。多点巡航调用方式**参考**原 `abot_patrol_nav.py` 巡航示例（`SimpleActionClient("move_base", MoveBaseAction)` + 保存目标列表 + 顺序发送 + 读取动作结果），**未迁移整个原源码包**。
+
+### A. Windows 已实际执行的检查（第三轮）
+
+| # | 检查项 | 命令 / 方法 | 结果 |
+| --- | --- | --- | --- |
+| 1 | 新增/改动 Python 语法 | `python -m py_compile` 校验 `send_goal.py`、`mission_manager.py`、`navigation_client.py`、`__init__.py`、`setup.py` | 通过 |
+| 2 | 新增 launch XML 语法 | `xml.etree.ElementTree` 解析 mission.launch、mission_sim.launch 及既有 launch | 通过 |
+| 3 | mission.yaml 与既有 YAML 语法 | `yaml.safe_load` | 通过 |
+| 4 | catkin Python 安装配置 | 核对 `catkin_python_setup()`、`setup.py`（`packages=['aigc_navigation']`、`package_dir={'':'src'}`）、`catkin_install_python` 含两个脚本 | 通过 |
+| 5 | 依赖声明 | package.xml 含 rospy/actionlib/move_base_msgs/geometry_msgs/tf 等 exec_depend | 通过 |
+| 6 | launch 引用与命名空间 | 核对 mission.launch / mission_sim.launch 的 `$(find ...)` 路径、`<rosparam>` 加载、`log_dir` 参数 | 通过 |
+| 7 | 共享模块不 init_node / sys.exit | 检查 navigation_client.py 无 `rospy.init_node` / `sys.exit` | 通过 |
+| 8 | send_goal.py 仍可用 | 重构后仍 `from ... import NavigationClient`，命令接口与退出码不变 | 通过 |
+| 9 | 航点与固定障碍物不重叠 | 脚本核对起点/4 航点与墙/测试物体距离（footprint 含 padding 半径约 0.212 m） | 通过（全部 CLEAR，最小约 0.34 m） |
+| 10 | 无个人电脑绝对路径 | 搜索 `C:\`、`/home/`、`/Users/` | 通过 |
+| 11 | 文本 UTF-8 / LF | 逐文件检查 BOM、CRLF、UTF-8 | 通过 |
+| 12 | 第一轮驼峰参数未改回 | grep 核对 `commandTopic` 等仍为驼峰 | 通过 |
+| 13 | Git diff 无无关改动 | `git status` / `git diff --stat` | 通过（仅本轮文件） |
+
+### B. 替身（stub）检查（第三轮，不依赖 ROS）
+
+用注入 fake `rospy`/`actionlib`/`move_base_msgs`/`geometry_msgs`/`tf` 的替身驱动 `mission_manager.py` 与重构后 `send_goal.py` 的 `main()`，验证分支逻辑（**不代表 ROS 实际运行通过**）。以下 58 项断言全部通过：
+
+- [x] 四个航点全部成功：顺序发送 (1.2,0)→(1.2,1.0)→(-1.0,1.0)→(-1.0,-1.0)，每个仅发一次，退出 0，记录 COMPLETED
+- [x] 任务接口只在 `task` 航点触发（不在 `finish` 触发）
+- [x] 首次失败 → 重试成功，该航点尝试次数记为 2
+- [x] 重试耗尽 + `failure_policy=stop` → 退出 2，状态 FAILED
+- [x] `failure_policy=skip` → 继续后续航点，退出 3，状态 PARTIAL，任务点记 skipped
+- [x] `transit` 失败 → 停止、非 COMPLETED；`finish` 失败 → 停止、非 COMPLETED
+- [x] 执行超时 → 取消 → 确认 → 重试（取消一次、共发 5 次目标）
+- [x] 取消未确认 → 不再发送后续目标，退出 2
+- [x] shutdown → 不再发送后续目标，退出 130
+- [x] 服务未连接 / 时钟未启动 → 就绪超时，退出 1，零发送
+- [x] 成功后不取消已完成目标（cancel 次数为 0）
+- [x] 同进程重跑两次：状态重置（两次各发 4 个目标，`run_id` 不同）
+- [x] 配置校验：重名/空列表/finish 非最后/负超时/max_retries 负数·小数·布尔/failure_policy 非法/NaN·Inf 坐标均报错
+- [x] 重构后 send_goal.py：服务不可用→1、成功→0、超时→2（且取消）、shutdown→130、失败发布器被容忍
+
+### C. 静态审查结果（第三轮）
+
+- **共享模块**（`navigation_client.py`）：只做 Action 客户端与停车，不调用 `init_node`/`sys.exit`；`TERMINAL_STATES` 与 `DEFINITIVE_TERMINAL_STATES`（后者排除 LOST，因 LOST 不代表取消被确认）；所有等待用墙上时间（`time.monotonic` 回退 `time.time`）；`cancel_goal` 只取消本客户端未结束目标（不 `cancel_all_goals`）；`cancel_and_stop` 可重复调用。
+- **主流程**（`mission_manager.py`）：init → 等待就绪（服务 + TF + 时钟，墙上时间有界、可中断）→ 顺序导航 → 任务接口 → finish → 保存记录退出；单一持久 Action 客户端；`max_retries=1` 表示首次失败后再试 1 次（共 2 次），不会无限重试；`transit` 失败停止、`finish` 失败不算完成、`skip` 最终 PARTIAL、LOST/取消未确认停止；超时先取消再确认，确认才重试，未确认停止。
+- **任务接口**：当前为占位（打印提示 + 停留 `dwell_time`），识别/对准/击打未接入。
+- **运行记录**：每次启动新 `run_id`，写 `~/.ros/aigc/`（可 `log_dir` 覆盖），字段含 run_id/起止时间/状态/退出码/原因/耗时/逐航点记录；成功/失败/中断均保存，不覆盖；保存失败不改写退出码。
+- **launch**：`mission.launch` 仅 mission_manager + mission.yaml + log_dir；`mission_sim.launch` 包含 nav_sim.launch + mission_manager，支持 `gui`/`rviz`/`paused`/`mission_file`/`log_dir`。
+- **配置校验**：坐标有限、名称唯一、列表非空、finish 最后、超时为正、max_retries 非负整数、failure_policy 限 stop/skip。
+- **航点坐标**：四点均在 3.6 m × 3.6 m 内且不落入墙/测试物体；机器人 footprint（含 padding 半径约 0.212 m）与障碍最小距离约 0.34 m。
+
+### D. 待 Ubuntu 执行的验证（第三轮）
+
+以下全部**待执行**，本轮不以下列项目通过作为提交前提；**未在 Ubuntu 实际运行，全程仿真尚未跑通**：
+
+- [ ] `catkin_make` 编译，含 `catkin_python_setup()`/`setup.py` 安装共享模块 `aigc_navigation`
+- [ ] `mission_manager` 节点启动、`mission.yaml` 正确加载到私有命名空间
+- [ ] 依次导航四个航点并到达 `finish`，退出码 0，记录 COMPLETED
+- [ ] 到达任务点时触发占位任务接口（日志可见）
+- [ ] 航点失败重试、`max_retries` 耗尽后按 `failure_policy` 停止/跳过
+- [ ] 执行超时 → 取消 → 确认 → 重试；取消未确认 → 停止
+- [ ] Ctrl+C / shutdown → 退出 130 且保存运行记录
+- [ ] 运行记录写入 `~/.ros/aigc/`，字段完整，重跑不覆盖
+- [ ] `send_goal.py` 重构后仍可单独导航（行为不变）
+- [ ] 暂停仿真（`/clock` 停止）时任务管理器仍按墙上时间超时/退出

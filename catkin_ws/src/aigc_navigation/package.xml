@@ -3,8 +3,8 @@
   <name>aigc_navigation</name>
   <version>0.0.1</version>
   <description>
-    Single-goal autonomous navigation (AMCL + move_base + Navfn + DWA) for the
-    AIGC unmanned vehicle challenge.
+    Single-goal and sequential waypoint autonomous navigation (AMCL + move_base
+    + Navfn + DWA) for the AIGC unmanned vehicle challenge.
   </description>
   <maintainer email="aigc@example.com">AIGC Team</maintainer>
   <license>MIT</license>

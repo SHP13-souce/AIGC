@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<launch>
+
+  <!-- One-shot full mission: Gazebo simulation + navigation stack + waypoint
+       mission manager. -->
+
+  <arg name="gui"    default="true"/>
+  <arg name="rviz"   default="true"/>
+  <arg name="paused" default="false"/>
+  <arg name="mission_file" default="$(find aigc_navigation)/config/mission.yaml"/>
+  <arg name="log_dir" default=""/>
+
+  <!-- Simulation + navigation stack. nav_sim.launch includes sim.launch (its
+       own RViz disabled) plus navigation.launch (map_server + AMCL + move_base
+       + optional nav RViz). -->
+  <include file="$(find aigc_navigation)/launch/nav_sim.launch">
+    <arg name="gui"    value="$(arg gui)"/>
+    <arg name="rviz"   value="$(arg rviz)"/>
+    <arg name="paused" value="$(arg paused)"/>
+  </include>
+
+  <!-- Waypoint mission manager (waits for navigation readiness itself). -->
+  <include file="$(find aigc_navigation)/launch/mission.launch">
+    <arg name="mission_file" value="$(arg mission_file)"/>
+    <arg name="log_dir" value="$(arg log_dir)"/>
+  </include>
+
+</launch>

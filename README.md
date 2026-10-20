@@ -1,11 +1,12 @@
 # AIGC 无人车仿真底座
 
-无人车挑战赛的仿真代码，目前包含两轮：
+无人车挑战赛的仿真代码，目前包含三轮：
 
 - **第一轮**：最小仿真底座——可运动的差速机器人、测试场地、相机与激光雷达。
 - **第二轮**：单点自主导航——基于已有 ROS1 导航包的定位（AMCL）、全局路径规划（navfn）、局部规划（DWA）与避障，支持导航到单个目标点。
+- **第三轮**：全程航点导航与比赛主流程骨架——按配置顺序导航多个航点，到达任务点调用（占位）任务接口，含失败重试、超时/中断处理与 JSON 运行记录。
 
-> 单点导航已实现，但**多点巡航 / 任务调度、比赛主程序、视觉识别、对准、击打、大模型服务等暂未实现**。
+> 航点导航与比赛主流程骨架已实现，但**视觉识别、对准、击打、大模型服务、正式比赛场地与真实机器人模型等暂未实现**。
 
 ---
 
@@ -30,6 +31,16 @@
 - 全局 / 局部代价地图（静态地图、激光障碍层、膨胀层），避障
 - 目标点发送脚本 `scripts/send_goal.py`（Python 2.7/3 兼容）
 - 一键启动 `nav_sim.launch` 与导航 RViz 配置 `navigation.rviz`
+
+### 第三轮：全程航点导航与比赛主流程骨架
+
+- 航点配置 `config/mission.yaml`（`task`/`transit`/`finish` 类型、坐标、有限重试、失败策略）
+- 顺序航点导航 `scripts/mission_manager.py`（单一持久 move_base Action 客户端）
+- 任务点接口（占位：打印提示 + 停留，识别/对准/击打未接入）
+- 导航失败有限重试、超时取消确认、中断/ROS shutdown 处理
+- 运行记录：每次运行写一份 JSON 到 `~/.ros/aigc/`（可覆盖目录）
+- 共享模块 `src/aigc_navigation/navigation_client.py`（经 `setup.py` 安装），`send_goal.py` 与其复用同一套导航客户端
+- 启动文件 `mission.launch`（仅任务管理器）与 `mission_sim.launch`（仿真 + 导航栈 + 任务管理器）
 
 ## 2. 工作方式
 
@@ -56,14 +67,20 @@ catkin_ws/
       launch/sim.launch
       worlds/test.world
       rviz/sim.rviz
-    aigc_navigation/          # 单点自主导航（第二轮）
+    aigc_navigation/          # 单点导航（第二轮）+ 全程航点导航（第三轮）
       launch/navigation.launch
       launch/nav_sim.launch
+      launch/mission.launch      # 仅航点任务管理器（第三轮）
+      launch/mission_sim.launch  # 仿真 + 导航栈 + 任务管理器（第三轮）
       config/                 # AMCL / move_base / costmap / DWA 参数
+      config/mission.yaml     # 航点任务配置（第三轮）
       maps/test.yaml          # 静态地图（生成工具输出，已提交）
       maps/test.pgm
       rviz/navigation.rviz
       scripts/send_goal.py
+      scripts/mission_manager.py   # 航点任务管理器（第三轮）
+      src/aigc_navigation/        # 共享 Python 模块（第三轮）
+      setup.py                    # catkin Python 模块安装（第三轮）
 tools/
   generate_test_map.py        # 从 test.world 生成静态地图（Python 3 标准库）
 docs/
@@ -321,20 +338,87 @@ rosrun aigc_navigation send_goal.py _x:=1.2 _y:=0.0 _yaw:=0.0
 - 导航测试时**不要**同时运行第 10 节的运动测试脚本或其他向 `/cmd_vel` 发布速度的程序，避免多个控制器争用 `/cmd_vel`。
 - 当前场地为静态；`test_object` 是固定障碍物，全局/局部路径会自动绕开它。
 
-## 12. 尚未完成的功能
+## 12. 全程航点导航与比赛主流程（第三轮）
 
-- 多点巡航 / 航点调度
-- 比赛主程序、任务流程
-- 模板识别 / AR 识别、视觉对准、击打
+### 12.1 主流程
+
+`mission_manager.py` 按 `config/mission.yaml` 的航点顺序依次导航：
+
+1. 初始化并校验配置；
+2. 等待导航就绪（move_base 服务连接 + `map → base_footprint` TF + 仿真时钟启动，墙上时间有界、可中断）；
+3. 用单一持久 Action 客户端顺序导航每个航点，失败按 `max_retries` 有限重试；
+4. 到达 `task` 航点后调用任务接口（当前为占位）；
+5. 到达 `finish` 后结束，保存一次运行的 JSON 记录并退出。
+
+航点类型：`task`（任务点，到达后调用任务接口）、`transit`（中转点，失败即停止）、`finish`（终点，必须最后，失败不算完成）。
+
+### 12.2 航点配置
+
+`config/mission.yaml` 在 launch 时通过 `<rosparam>` 加载到节点私有命名空间。主要参数：
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `frame_id` | `map` | 目标坐标系 |
+| `ready_timeout` / `server_timeout` / `goal_timeout` / `cancel_timeout` | 30 / 10 / 60 / 3 | 均为墙上秒 |
+| `max_retries` | 1 | 首次失败后最多重试次数（共 2 次尝试），非负整数 |
+| `failure_policy` | `stop` | 任务点失败策略：`stop` 停止 / `skip` 跳过（最终 PARTIAL） |
+| `dwell_time` | 0.5 | 到达任务点后的停留秒数 |
+| `waypoints` | 见文件 | 有序列表，每项 `name`/`kind`/`x`/`y`/`yaw`，`finish` 必须最后 |
+
+修改 `mission.yaml` 后重新 `roslaunch` 即可生效。
+
+### 12.3 运行记录
+
+每次启动生成新的 `run_id`，在 `~/.ros/aigc/`（可用 `log_dir` 参数覆盖）写一份 JSON，记录 `run_id`、起止时间、最终状态、退出码、耗时，以及每个航点的名称/坐标/尝试次数/结果/原因。成功、失败、中断时都会保存，且**不覆盖**旧记录；保存失败不会把导航失败改写为成功。
+
+### 12.4 退出码
+
+| 退出码 | 含义 |
+| --- | --- |
+| 0 | 全部完成（COMPLETED） |
+| 1 | 配置无效或导航未就绪 |
+| 2 | 导航失败 / 超时 / 取消未确认 / 连接丢失 |
+| 3 | 跳过了任务点（PARTIAL） |
+| 130 | 中断（Ctrl+C）或 ROS shutdown |
+
+### 12.5 启动
+
+```bash
+source /opt/ros/melodic/setup.bash
+cd catkin_ws
+catkin_make
+source devel/setup.bash
+
+# 一键：Gazebo 仿真 + 导航栈 + 任务管理器
+roslaunch aigc_navigation mission_sim.launch
+
+# 无界面 / 无 RViz
+roslaunch aigc_navigation mission_sim.launch gui:=false rviz:=false
+
+# 仅任务管理器（仿真与导航栈已在运行时）
+roslaunch aigc_navigation mission.launch
+```
+
+`mission.launch` 只启动 `mission_manager` 节点并加载 `mission.yaml`；`mission_sim.launch` 包含 `nav_sim.launch` 与 `mission.launch`，支持 `gui`/`rviz`/`paused` 及 `mission_file`/`log_dir` 参数。**不要**同时运行 `mission.launch` 与 `send_goal.py`（会争用同一 `/cmd_vel`）。
+
+### 12.6 与 send_goal.py 的关系
+
+`mission_manager.py` 复用 `send_goal.py` 的 Action 接口、墙上时间超时、shutdown 检查、终态判断与取消停车，这些逻辑提取到共享模块 `src/aigc_navigation/navigation_client.py`（经 `setup.py` + `catkin_python_setup()` 安装）。`send_goal.py` 命令仍可单独使用。
+
+多点巡航的调用方式**参考**原 `abot_patrol_nav.py` 巡航示例（`SimpleActionClient("move_base", MoveBaseAction)` + 保存目标列表 + 顺序发送 + 读取动作结果），**未迁移整个原源码包**。
+
+## 13. 尚未完成的功能
+
+- 视觉识别（模板/AR）、对准、击打（任务接口当前为占位）
 - 大模型服务
 - 正式比赛场地与真实机器人模型（当前为临时测试参数与基础几何体）
 
-## 13. 待 Ubuntu 验证的内容
+## 14. 待 Ubuntu 验证的内容
 
-本轮在 Windows 上仅做了静态检查（XML/YAML 语法、地图生成与像素核对、脚本编译、文件引用与参数一致性等），**尚未在 Ubuntu 上实际运行**。以下内容待 Ubuntu 验证，详见 `docs/verification.md`：
+本轮在 Windows 上仅做了静态检查（XML/YAML 语法、脚本编译、文件引用与参数一致性、替身分支检查、航点碰撞核对等），**尚未在 Ubuntu 上实际运行**。以下内容待 Ubuntu 验证，详见 `docs/verification.md`：
 
 - `xacro` 展开、`check_urdf`
-- `catkin_make` 编译（含 `aigc_navigation`）
+- `catkin_make` 编译（含 `catkin_python_setup()`/`setup.py` 安装共享模块）
 - Gazebo 启动与机器人出生/稳定
 - 话题与频率（`/odom`、`/scan`、`/usb_cam/image_raw` 等）
 - TF 树
@@ -344,3 +428,5 @@ rosrun aigc_navigation send_goal.py _x:=1.2 _y:=0.0 _yaw:=0.0
 - AMCL 定位收敛（`map → odom` 稳定）
 - move_base 规划出全局路径、局部代价地图/避障生效
 - `send_goal.py` 导航到目标点并返回 `SUCCEEDED`
+- `mission_manager` 依次导航全部航点并到达 `finish`（退出码 0、记录 COMPLETED）
+- 航点失败重试与 `failure_policy` 停止/跳过、超时取消确认、中断退出 130、运行记录写入与不覆盖

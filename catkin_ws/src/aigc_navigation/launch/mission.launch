@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<launch>
+
+  <!-- Run the waypoint mission manager only. Assumes the navigation stack
+       (map_server + AMCL + move_base) is already running. -->
+
+  <arg name="mission_file" default="$(find aigc_navigation)/config/mission.yaml"/>
+  <arg name="log_dir" default=""/>
+
+  <node name="mission_manager" pkg="aigc_navigation" type="mission_manager.py"
+        output="screen" required="false">
+    <rosparam file="$(arg mission_file)" command="load"/>
+    <param name="log_dir" value="$(arg log_dir)"/>
+  </node>
+
+</launch>
