@@ -24,7 +24,6 @@ import json
 import math
 import os
 import sys
-import threading
 import time
 import uuid
 
@@ -47,6 +46,7 @@ STATUS_STOPPED = 'STOPPED'
 WP_SUCCESS = 'success'
 WP_FAILED = 'failed'
 WP_SKIPPED = 'skipped'
+WP_INTERRUPTED = 'interrupted'
 
 # Non-ordinary outcomes surfaced from navigate_to(); each stops the whole run.
 OUT_LOST = 'lost'
@@ -66,6 +66,8 @@ class MissionRunner(object):
         self.tf_listener = tf.TransformListener()
         self.records = []
         self.skipped_any = False
+        self.in_progress_wp = None
+        self.in_progress_attempts = 0
         self.run_id = 'aigc_%s_%s' % (
             time.strftime('%Y%m%dT%H%M%S'), uuid.uuid4().hex[:8])
         self.start_wall = wall_time()
@@ -85,42 +87,43 @@ class MissionRunner(object):
 
         Returns True when all three hold: the action server is connected, the
         map -> base_footprint TF is available, and simulation time has started.
-        Never hangs even if /clock stays at zero.
+        Never blocks on ROS time: the server connection is wall-clock bounded
+        by server_timeout, and the TF check uses non-blocking canTransform()
+        polling so a paused /clock cannot stall readiness.
         """
-        deadline = wall_time() + self.cfg['ready_timeout']
         frame = self.cfg['frame_id']
+        deadline = wall_time() + self.cfg['ready_timeout']
 
-        connected = {'ok': False}
+        # 1) Action server connection, bounded by server_timeout but never past
+        #    the overall readiness deadline.
+        remaining = deadline - wall_time()
+        if remaining <= 0:
+            return False
+        connect_timeout = min(self.cfg['server_timeout'], remaining)
+        if not self.client.wait_for_server(connect_timeout):
+            rospy.logerr('move_base action server not available within %.1fs' %
+                         connect_timeout)
+            return False
+        if is_shutdown():
+            return False
 
-        def _connect():
-            try:
-                connected['ok'] = self.client.wait_for_server_blocking()
-            except Exception:
-                connected['ok'] = False
-
-        thread = threading.Thread(target=_connect)
-        thread.daemon = True
-        thread.start()
-
-        server_ok = False
+        # 2) TF + simulation clock, polled with time.sleep and bounded by the
+        #    remaining portion of the overall readiness deadline.
         tf_ok = False
         clock_ok = False
         while wall_time() < deadline:
             if is_shutdown():
-                break
-            if connected['ok']:
-                server_ok = True
+                return False
             if not tf_ok:
                 try:
-                    self.tf_listener.waitForTransform(
-                        frame, 'base_footprint', rospy.Time(0),
-                        rospy.Duration(0.2))
-                    tf_ok = True
+                    if self.tf_listener.canTransform(
+                            frame, 'base_footprint', rospy.Time(0)):
+                        tf_ok = True
                 except Exception:
                     pass
             if rospy.get_rostime() > rospy.Time(0):
                 clock_ok = True
-            if server_ok and tf_ok and clock_ok:
+            if tf_ok and clock_ok:
                 return True
             time.sleep(0.1)
         return False
@@ -137,14 +140,22 @@ class MissionRunner(object):
         max_retries = self.cfg['max_retries']
         frame_id = self.cfg['frame_id']
 
+        self.in_progress_wp = wp
+        self.in_progress_attempts = 0
+
         attempts = 0
         while True:
             if is_shutdown():
                 return {'status': OUT_SHUTDOWN, 'attempts': attempts,
                         'reason': 'shutdown'}
 
-            self.client.send_goal(wp['x'], wp['y'], wp['yaw'], frame_id)
+            if not self.client.send_goal(wp['x'], wp['y'], wp['yaw'], frame_id):
+                # A previous goal is still owned and unconfirmed: never start a
+                # new goal over it.
+                return {'status': OUT_CANCEL_UNCONFIRMED, 'attempts': attempts,
+                        'reason': 'previous goal not confirmed'}
             attempts += 1
+            self.in_progress_attempts = attempts
 
             state = self.client.wait_for_result(goal_timeout)
 
@@ -153,10 +164,16 @@ class MissionRunner(object):
                         'reason': 'shutdown'}
 
             if state is None:
-                # Execution timed out: cancel, then confirm the old goal has
-                # finished before retrying or continuing.
+                # Execution timed out: cancel, then require a definitive
+                # confirmation before retrying or continuing.
                 self.client.cancel_goal()
-                if self.client.wait_for_cancel(cancel_timeout):
+                confirmed = self.client.wait_for_cancel(cancel_timeout)
+                if is_shutdown():
+                    # Shutdown during cancel confirmation is an interrupt, not
+                    # an ordinary cancel failure.
+                    return {'status': OUT_SHUTDOWN, 'attempts': attempts,
+                            'reason': 'shutdown during cancel confirmation'}
+                if confirmed:
                     if attempts <= max_retries:
                         rospy.logwarn(
                             'Waypoint %s timed out (attempt %d); retrying.' %
@@ -214,6 +231,13 @@ class MissionRunner(object):
             'reason': reason,
         })
 
+    def record_interrupt(self, reason):
+        """Record the in-progress waypoint (if any) as interrupted."""
+        if self.in_progress_wp is not None:
+            self._record(self.in_progress_wp, WP_INTERRUPTED,
+                         self.in_progress_attempts, reason)
+            self.in_progress_wp = None
+
     # -- main flow --------------------------------------------------------
     def run(self):
         if not self.wait_ready():
@@ -233,10 +257,16 @@ class MissionRunner(object):
             rospy.loginfo('Navigating to %s (%s): x=%.3f y=%.3f yaw=%.3f' %
                           (wp['name'], wp['kind'], wp['x'], wp['y'], wp['yaw']))
             res = self.navigate_to(wp)
+            # navigate_to returned: the outcome is recorded below, so clear the
+            # in-progress marker (it only matters if interrupted mid-nav).
+            self.in_progress_wp = None
 
             if res['status'] == OUT_SHUTDOWN:
+                self._record(wp, WP_INTERRUPTED, res['attempts'], res['reason'])
+                rospy.logwarn('Waypoint %s: %s; stopping the run.' %
+                              (wp['name'], res['reason']))
                 self.cleanup()
-                return (130, STATUS_STOPPED, 'shutdown')
+                return (130, STATUS_STOPPED, res['reason'])
 
             if res['status'] == OUT_LOST:
                 self._record(wp, WP_FAILED, res['attempts'], 'lost')
@@ -246,12 +276,11 @@ class MissionRunner(object):
                 return (2, STATUS_FAILED, 'lost connection')
 
             if res['status'] == OUT_CANCEL_UNCONFIRMED:
-                self._record(wp, WP_FAILED, res['attempts'],
-                             'cancel not confirmed')
-                rospy.logerr('Waypoint %s: cancel not confirmed; stopping '
-                             'the run.' % wp['name'])
+                self._record(wp, WP_FAILED, res['attempts'], res['reason'])
+                rospy.logerr('Waypoint %s: %s; stopping the run.' %
+                             (wp['name'], res['reason']))
                 self.cleanup()
-                return (2, STATUS_FAILED, 'cancel unconfirmed')
+                return (2, STATUS_FAILED, res['reason'])
 
             if res['status'] == WP_SUCCESS:
                 self._record(wp, WP_SUCCESS, res['attempts'], '')
@@ -377,8 +406,11 @@ def validate_config(cfg):
             errors.append('duplicate waypoint name %r' % name)
         else:
             names.add(name)
-        kind = wp.get('kind', 'task')
-        if kind not in _VALID_KINDS:
+        kind = wp.get('kind')
+        if not isinstance(kind, str) or not kind:
+            errors.append('waypoint %d has no non-empty kind '
+                          '(task/transit/finish)' % i)
+        elif kind not in _VALID_KINDS:
             errors.append('waypoint %d kind must be task/transit/finish' % i)
         if kind == 'finish' and i != len(wps) - 1:
             errors.append('finish waypoint must be the last waypoint')
@@ -423,6 +455,7 @@ def main():
     except KeyboardInterrupt:
         rospy.logwarn('Interrupted; cleaning up.')
         runner.cleanup()
+        runner.record_interrupt('interrupted')
         runner.save_record(130, STATUS_STOPPED, 'interrupted')
         sys.exit(130)
     except Exception as e:

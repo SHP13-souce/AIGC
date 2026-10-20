@@ -345,7 +345,7 @@ rosrun aigc_navigation send_goal.py _x:=1.2 _y:=0.0 _yaw:=0.0
 `mission_manager.py` 按 `config/mission.yaml` 的航点顺序依次导航：
 
 1. 初始化并校验配置；
-2. 等待导航就绪（move_base 服务连接 + `map → base_footprint` TF + 仿真时钟启动，墙上时间有界、可中断）；
+2. 等待导航就绪（move_base 服务连接 + `map → base_footprint` TF + 仿真时钟启动；连接等待以 `server_timeout` 为上限、TF 用非阻塞 `canTransform` 轮询，全程以 `ready_timeout` 墙上时间为界、可中断）；
 3. 用单一持久 Action 客户端顺序导航每个航点，失败按 `max_retries` 有限重试；
 4. 到达 `task` 航点后调用任务接口（当前为占位）；
 5. 到达 `finish` 后结束，保存一次运行的 JSON 记录并退出。
@@ -406,6 +406,14 @@ roslaunch aigc_navigation mission.launch
 `mission_manager.py` 复用 `send_goal.py` 的 Action 接口、墙上时间超时、shutdown 检查、终态判断与取消停车，这些逻辑提取到共享模块 `src/aigc_navigation/navigation_client.py`（经 `setup.py` + `catkin_python_setup()` 安装）。`send_goal.py` 命令仍可单独使用。
 
 多点巡航的调用方式**参考**原 `abot_patrol_nav.py` 巡航示例（`SimpleActionClient("move_base", MoveBaseAction)` + 保存目标列表 + 顺序发送 + 读取动作结果），**未迁移整个原源码包**。
+
+### 12.7 就绪检查与目标生命周期（修复说明）
+
+上一版文档称“就绪检查完全受实际时间限制”，但当时的 TF 就绪用 `waitForTransform(..., rospy.Duration(0.2))`，其超时依赖 ROS 时间，`/clock` 暂停时可能阻塞，该结论不准确。本版已修正：
+
+- 就绪检查改为非阻塞 `canTransform` 轮询 + 普通 `time.sleep`，服务连接等待 ≤ `server_timeout`、就绪总时长 ≤ `ready_timeout`，全程与 `/clock` 无关、可中断；就绪失败/中断时零发送。
+- 目标所有权只在确定终态（SUCCEEDED/ABORTED/REJECTED/PREEMPTED/RECALLED）释放；LOST/取消超时/异常/shutdown 保留所有权，清理可重试取消；旧目标未确认时不发送新目标。
+- 取消确认期间 shutdown 视为中断（退出 130、状态 STOPPED），与普通“取消未确认”（退出 2）区分；`kind` 字段必填且限 `task`/`transit`/`finish`。
 
 ## 13. 尚未完成的功能
 

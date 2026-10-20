@@ -141,7 +141,11 @@ class NavigationClient(object):
     def __init__(self, name='move_base', cmd_vel_topic='/cmd_vel'):
         self._client = actionlib.SimpleActionClient(name, MoveBaseAction)
         self._stop_pub = rospy.Publisher(cmd_vel_topic, Twist, queue_size=1)
-        self._goal_sent = False
+        # True while this client owns a goal that has not yet reached a
+        # DEFINITIVE terminal state. LOST, timeout, cancel exceptions and
+        # shutdown leave the goal's fate unknown, so ownership is retained
+        # until a definitive terminal state is observed.
+        self._goal_owned = False
 
     # -- connection -------------------------------------------------------
     def wait_for_server(self, timeout):
@@ -157,6 +161,10 @@ class NavigationClient(object):
 
     # -- goal lifecycle ---------------------------------------------------
     def send_goal(self, x, y, yaw, frame_id='map'):
+        """Send a goal; returns True if sent, False if a previous goal is still
+        owned and unconfirmed (never overwrite an outstanding goal)."""
+        if self._goal_owned:
+            return False
         goal = MoveBaseGoal()
         goal.target_pose.header.frame_id = frame_id
         goal.target_pose.header.stamp = rospy.Time.now()
@@ -164,35 +172,48 @@ class NavigationClient(object):
         goal.target_pose.pose.position.y = y
         goal.target_pose.pose.orientation = yaw_to_quaternion(yaw)
         self._client.send_goal(goal)
-        self._goal_sent = True
+        self._goal_owned = True
+        return True
 
     def get_state(self):
         return self._client.get_state()
 
     def wait_for_result(self, timeout):
-        """Wait wall-clock bounded for a terminal state (or None on timeout)."""
+        """Wait wall-clock bounded for a terminal state (or None on timeout).
+
+        Ownership is released only on a DEFINITIVE terminal state. LOST and
+        None keep ownership: neither proves the goal finished.
+        """
         state = wait_for_result_wall(self._client, timeout)
-        if state in TERMINAL_STATES:
-            self._goal_sent = False
+        if state in DEFINITIVE_TERMINAL_STATES:
+            self._goal_owned = False
         return state
 
     def cancel_goal(self):
-        """Cancel only our own unfinished goal (never cancel_all_goals)."""
-        if not self._goal_sent:
+        """Issue a cancel for our own goal (never cancel_all_goals).
+
+        Ownership is NOT cleared here: a cancel request is not proof the goal
+        finished. LOST, a cancel timeout/exception and shutdown all leave the
+        goal's fate unknown, so ownership is retained until a DEFINITIVE
+        terminal state is observed in wait_for_cancel() or wait_for_result().
+        This lets cleanup retry the cancel later, including for a goal whose
+        state is LOST.
+        """
+        if not self._goal_owned:
             return
         try:
-            if self._client.get_state() not in TERMINAL_STATES:
-                self._client.cancel_goal()
+            self._client.cancel_goal()
         except Exception:
             pass
-        self._goal_sent = False
 
     def wait_for_cancel(self, timeout):
         """Wait wall-clock bounded for a definitive terminal state after cancel.
 
         Returns True on a definitive terminal state (SUCCEEDED/ABORTED/REJECTED/
-        PREEMPTED/RECALLED); False on timeout, shutdown, or LOST (LOST is not
-        accepted as proof the goal finished).
+        PREEMPTED/RECALLED), at which point ownership is released. Returns False
+        on timeout, shutdown, or LOST (LOST is not accepted as proof the goal
+        finished); ownership is retained in every False case so cleanup can
+        retry the cancel.
         """
         deadline = wall_time() + timeout
         while wall_time() < deadline:
@@ -204,6 +225,7 @@ class NavigationClient(object):
                 time.sleep(0.1)
                 continue
             if state in DEFINITIVE_TERMINAL_STATES:
+                self._goal_owned = False
                 return True
             if state == actionlib.GoalStatus.LOST:
                 return False
@@ -214,7 +236,9 @@ class NavigationClient(object):
         publish_stop(self._stop_pub, count, interval)
 
     def cancel_and_stop(self):
-        """Re-entrant cleanup: cancel own unfinished goal, then stop."""
+        """Re-entrant cleanup: cancel our own goal (retrying if a previous
+        cancel went unconfirmed), then stop. Finite and safe to call repeatedly.
+        """
         self.cancel_goal()
         try:
             self.stop()

@@ -281,3 +281,25 @@ Windows 重新检查（本轮，均已实际执行；用简单替身 stub 验证
 - [ ] 运行记录写入 `~/.ros/aigc/`，字段完整，重跑不覆盖
 - [ ] `send_goal.py` 重构后仍可单独导航（行为不变）
 - [ ] 暂停仿真（`/clock` 停止）时任务管理器仍按墙上时间超时/退出
+
+### E. 第三轮修复记录（就绪检查与目标生命周期）
+
+上一版存在若干问题，本次已修复（接口、地图、场地、导航参数不变）：
+
+1. **就绪检查未真正受墙上时间限制**：上一版 TF 就绪用 `tf_listener.waitForTransform(..., rospy.Duration(0.2))`，其超时依赖 ROS 时间；当 `use_sim_time=true` 且 `/clock` 暂停时该调用可能长时间阻塞，无法按预期退出。已改为非阻塞 `canTransform(frame, 'base_footprint', rospy.Time(0))` 轮询 + 普通 `time.sleep`，每轮检查墙上 deadline 与 `is_shutdown()`；服务连接复用 `NavigationClient.wait_for_server(timeout)`，`server_timeout` 真正生效（连接等待 ≤ `server_timeout`，就绪总时长 ≤ `ready_timeout`，后续 TF/时钟等待只用剩余时间）；就绪失败/中断时零发送。**纠正上一版“就绪检查墙上时间有界”的不准确结论**：上一版该结论只覆盖服务连接等部分，TF 等待仍依赖 ROS 时间，本次才真正做到全流程与 `/clock` 无关。
+2. **目标所有权**：上一版 `cancel_goal()` 发出取消请求后即置 `_goal_sent=False`，`wait_for_result()` 遇到 LOST 也置 False，会把“取消未确认/未知”误判为“已结束”。已改为所有权仅在**确定的终态**（SUCCEEDED/ABORTED/REJECTED/PREEMPTED/RECALLED）释放；LOST 保留所有权；允许取消自己处于 LOST 的目标；取消超时/异常/shutdown 保持未确认状态（清理可重试）；不 `cancel_all_goals`；旧目标未确认时不发送新目标；清理有限次、可重复、如实记录。
+3. **取消确认过程中的中断**：上一版 `wait_for_cancel()` 返回 False 后直接按“取消未确认”处理。已改为先检查 shutdown：shutdown → 清理并退出 130（记录 STOPPED，含当前航点/尝试次数/中断原因）；普通未确认 → 退出 2；已确认 → 允许重试；其它等待与停留之后同样检查 shutdown。
+4. **kind 校验统一**：上一版 `validate_config` 用 `wp.get('kind', 'task')`，运行期用 `wp['kind']`，缺少 `kind` 会通过校验却在运行期崩溃。已改为 `kind` 必填且仅限 `task`/`transit`/`finish`，缺失给出明确配置错误并退出 1，校验失败不发送任何目标。
+
+Windows 重新检查（本轮修复，均已实际执行；用简单替身 stub 验证分支逻辑，**不代表 ROS 实际运行通过**）：
+
+- [x] `python -m py_compile` 校验 5 个 Python 文件
+- [x] 替身回归 **74 项断言全部通过**（含既有分支与新场景），其中新增：
+  - [x] TF 永不存在 + `/clock` 冻结 → 按墙上时间退出 1、零发送，且 `waitForTransform` 从未被调用（`canTransform` 被轮询）
+  - [x] `server_timeout` < `ready_timeout` → 连接等待被 `server_timeout` 限定，未拖到 `ready_timeout`
+  - [x] 取消已发出但目标仍 ACTIVE → 所有权保留、清理重试取消、不再发送新目标
+  - [x] LOST → 停止运行（退出 2、记录 lost），LOST 不被当作取消确认、所有权保留
+  - [x] 取消确认期间 shutdown → 退出 130、状态 STOPPED、记录 interrupted 且不再发后续目标
+  - [x] 缺少 kind → 配置校验失败、退出 1、零发送
+  - [x] 既有全成功/重试/停止/跳过/transit 失败/finish 失败/超时取消确认，及 send_goal.py 各分支，全部保持通过
+- [x] `git diff --check` 无空白错误；UTF-8 / LF 逐文件检查通过
