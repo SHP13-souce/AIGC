@@ -449,16 +449,19 @@ roslaunch aigc_navigation mission.launch
 
 `task_mission_sim.launch` 将 `mission_manager` 的 `execute_tasks` 置为 `true`。对每个 `task` 航点：
 
-1. `move_base` 导航成功后**先停车并等待车身稳定**（读取 `/odom`，线/角速度低于阈值）；
+1. `move_base` 导航成功后**先停车并等待车身稳定**（读取 `/odom`，线/角速度低于阈值，受 `settle_timeout` 与整项任务期限双重约束）；
 2. `task_executor.py` 原地旋转搜索目标：无检测时以 `search_rate` 低速搜索，检测到后按 `error = atan2(x, z)` 比例转向（`angular.z = clamp(-kp·error)`，仅原地、无平移）；
-3. 连续 `stable_frames` 个**不同图像时间戳**的对准帧（`|error| ≤ align_tolerance`）判定对准；
-4. 再次停车稳定后调用 `sim_shooter.py` 发一次模拟击打；
-5. 成功后继续下一任务点；失败按 `failure_policy` 停止/跳过；中断退出 130（非超时）；每点每轮**最多一次**模拟击打。
+3. **对准与停车稳定合并判定**：只有「对准（`|error| ≤ align_tolerance`）且车身已停稳」的帧才累计稳定帧，只对**严格递增**的新图像时间戳计数（同一帧重复读取与倒退帧都不计数也不清零，A、B、A 不会累计成 3）；连续 `stable_frames` 帧即认为可击打；
+4. **击打前最终门槛**：在触发 `sim_shooter.py` 的瞬间重新确认——任务仍有效且未 shutdown、整项任务未超时、目标仍新鲜且对准、新鲜里程计表明已停稳、稳定帧条件仍成立、该点击打额度未消耗；任一不成立则重新寻找/对准或明确返回失败/超时，**绝不击打**；
+5. 成功后继续下一任务点；失败按 `failure_policy` 停止/跳过；**任意阶段中断 → 退出 130**、超时 → 超时（两者都**不**记为成功）；每点每轮**最多一次**模拟击打，额度在触发前预留（异常不会重复触发），前次失败/超时/中断不会被「已经打过」改写成成功。
+
+整项任务共用**同一个绝对墙上期限**（`task_timeout`），覆盖停车、搜索、对准、再次稳定、模拟脉冲与反馈等待；各阶段开始与每次等待返回后都检查 shutdown 与期限。所有等待均使用墙上时间，`/clock` 暂停不能使任务卡死。
 
 ### 13.2 测试靶资源
 
 - 三个白色靶板（0.20 × 0.20 × 0.02 m）作为静态障碍加入 `test.world`，黑色图案 0.09 m、中心高 0.15 m：ID0 中心 (1.2, 0.65, 0.15) 朝 -y，ID1 (0.55, 1.0, 0.15) 朝 +x，ID2 (-1.0, 0.35, 0.15) 朝 +y。
-- 图案为 180×180 无损灰度 PNG（`tools/generate_test_markers.py`，Python 3 标准库生成并已提交），配 COLLADA 网格 `meshes/marker_*.dae`（0.09 m 平面、UV 映射、白色背板碰撞）；`aigc_sim` 导出 `gazebo_media_path`，网格以 `model://aigc_sim/meshes/...` 引用。
+- 图案为 180×180 无损灰度 PNG（`tools/generate_test_markers.py`，Python 3 标准库生成并已提交），配 COLLADA 网格 `meshes/marker_*.dae`（0.09 m 平面、UV 映射、白色背板碰撞）；网格以 `model://aigc_sim/meshes/...` 引用。
+- **资源搜索路径**：`model://aigc_sim/...` 通过 **`gazebo_model_path`** 解析（指向 `GAZEBO_MODEL_PATH`，搜索根目录为 `${prefix}/..`，源空间与安装空间下都能命中 `aigc_sim/meshes/marker_N.dae`）；`gazebo_media_path`（`GAZEBO_RESOURCE_PATH`）仅用于 DAE 的相对纹理引用（`../materials/textures/*.png`），两者并存、各司其职。上一版只用 `gazebo_media_path` 来解析 `model://` 网格引用是错误的，已修正。
 - 三块靶板已纳入静态地图（`test.pgm`/`test.yaml` 重新生成并提交）。
 
 ### 13.3 AR 检测（`ar_detector.launch`）
@@ -471,14 +474,17 @@ roslaunch aigc_navigation mission.launch
 
 ### 13.4 检测稳健性（`task_executor.py`）
 
+- 任务开始时记录任务开始的 ROS 时间并清空计数与缓存；有效检测至少要求：marker 自身 header 时间戳 **大于零**且**在任务开始之后**采集（拒绝零时间戳、任务前图像），图像时间戳年龄与消息墙上接收年龄都合格，ID/frame/坐标合法；
 - 按 `target_id` 过滤；同 id 多个 marker 时不盲取；坐标必须有限且 `z > 0`；`frame_id` 必须等于 `output_frame`；
 - 双重新鲜度：图像时间戳年龄 ≤ `detection_max_age`，且消息收到的墙上年龄 ≤ `receive_max_age`（`/clock` 暂停会使检测失效）；
-- 同一图像时间戳不重复累计稳定次数（20 Hz 控制环不会把 15 Hz 检测多算）；目标丢失清零计数；只有任务开始后新到的检测才被接受；
-- 未停车稳定（`/odom` 线/角速度超阈值）不击打；任务结束时发布有限次零速度并结束模拟脉冲。
+- 稳定计数只对**严格递增**的新图像时间戳增加：同一帧重复读取不增加也不误判丢失，倒退帧不计数（A、B、A 不会累计成 3）；真正丢失、过期或偏差超限才清零；
+- 停稳判定同时检查里程计消息的墙上接收年龄与 **`odom.header.stamp` 的有效性和年龄**：仅凭「刚收到」不能把旧里程计当成新数据；未停稳不击打；任务结束时发布有限次零速度并结束模拟脉冲。
 
 ### 13.5 模拟击打（`sim_shooter.py`）
 
 进程内模拟，沿用原击打接口 `/shoot`（`std_msgs/String`，命令 `shoot` / `stopshoot`）：发一次 `shoot` 再发 `stopshoot`，可中断；反馈含 `run_id/waypoint/target_id/shot_id/backend=simulated/success/reason`，`hit` 恒为 `null`。结果由 `task.yaml` 的 `shooter.success` 配置（`false` 可模拟击打失败）。**不代表真实命中**。
+
+模拟后端接受整项任务的绝对期限：调用开始时已 shutdown 或超时则**不发布 `shoot`**；脉冲与反馈等待都遵守期限；用 `try/finally` 结束已开始的脉冲；中断返回 `interrupted`、超时返回 `timeout`，两者都**不**沿用配置的 `success=true`（清理允许有限耗时，但超时后不报告业务成功）。
 
 ### 13.6 任务参数（`config/task.yaml`）
 
@@ -489,11 +495,15 @@ roslaunch aigc_navigation mission.launch
 | `search_rate` | 0.15 | 无目标时的低速搜索角速度 rad/s |
 | `align_tolerance` / `stable_frames` | 0.035 / 3 | 对准阈值 rad / 稳定帧数 |
 | `detection_max_age` / `receive_max_age` | 0.3 / 0.5 | 图像时间戳 / 墙上接收年龄上限 s |
-| `task_timeout` / `settle_timeout` | 20 / 3 | 整个任务 / 停车稳定超时 s |
+| `task_timeout` / `settle_timeout` | 20 / 3 | 整个任务（停车+搜索+对准+再次稳定+脉冲+反馈）/ 停车稳定超时 s |
 | `odom_max_age` / `odom_max_linear` / `odom_max_angular` | 0.5 / 0.05 / 0.05 | 稳定判定阈值 |
 | `shooter` | 见文件 | 模拟击打后端（topic/脉冲/延迟/结果） |
 
 以上均为**测试初值**，非正式比赛参数。
+
+### 13.8 任务参数校验（仅在 `execute_tasks=true` 时、任何转向/击打之前）
+
+启动后先校验任务参数，任一不合法即打印明确错误、退出码 1，且**不发布任何转向或击打指令**：`execute_tasks` 与 `shooter.success` 必须为布尔；`control_rate`/`task_timeout`/各类年龄、速度/角度/停稳阈值必须为正值有限数；`stable_frames`/`stop_publish_count` 必须为正整数（拒绝布尔）；`search_rate ≤ max_angular_rate`；`pulse_duration` 为正、`delay` 非负有限；话题名与 `output_frame` 必须为非空字符串。
 
 ### 13.7 启动（Ubuntu）
 
@@ -536,7 +546,9 @@ roslaunch aigc_navigation task_mission_sim.launch gui:=false rviz:=false
 - `mission_manager` 依次导航全部航点并到达 `finish`（退出码 0、记录 COMPLETED）
 - 航点失败重试与 `failure_policy` 停止/跳过、超时取消确认、中断退出 130、运行记录写入与不覆盖
 - AR 测试靶纹理在 Gazebo 中正确显示（无镜像/倒置，检测方向正确）
+- `model://aigc_sim/meshes/...` 在源空间与安装空间都能被 `gazebo_model_path` 解析到（**尚未验证**，当前只确认了目录结构；DAE/XML 语法解析通过**不等于** Gazebo 正确显示）
 - `ar_track_alvar` 识别到 ID0/1/2，`/ar_pose_marker` 的 marker 自身 header（stamp/frame_id）正确
 - 检测双重新鲜度、同帧不重复计数、目标丢失清零、转向符号（偏右 → 负角速度）在实车上成立
 - 对准稳定计数与模拟击打反馈、每点最多一次击打、模拟失败不记为任务成功
+- 整项任务统一期限（含模拟脉冲/反馈）、击打前最终门槛（目标/里程计/稳定帧/额度复核）、中断退出 130、任务参数校验（非法配置退出 1 且无转向/击打）
 - `execute_tasks=true` 三点任务 + `finish` 全流程（退出码 0、记录 COMPLETED）；`execute_tasks=false` 原纯导航流程不回归

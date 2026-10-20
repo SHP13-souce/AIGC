@@ -374,3 +374,67 @@ Windows 重新检查（本轮修复，均已实际执行；用简单替身 stub 
 - [ ] `execute_tasks=false` 时原纯导航流程不回归（第三轮各分支）
 - [ ] 暂停仿真（`/clock` 停止）时任务/就绪按墙上时间超时或退出；中断退出 130 并结束模拟脉冲
 
+> **第四轮结论纠正（见第五轮）**：① 上一版认为 `gazebo_media_path` 可解析 `model://` URI——错误，`model://` 由 `gazebo_model_path`（GAZEBO_MODEL_PATH）解析，媒体路径只服务 DAE 相对纹理；② 上一版未做到「击打前统一最终门槛」（停车/搜索/对准/稳定/额度/超时/中断在触发瞬间重新复核）与「`task_timeout` 覆盖整项任务（含脉冲/反馈）」，这两点在第五轮才真正实现。
+
+---
+
+## 第五轮：修复第四轮任务代码（击发门槛与执行期限）
+
+本轮**只修复第四轮代码，不新增比赛功能**。保留模块、AR 图案、场地、导航接口与已通过逻辑不变。
+
+起始（基线）commit：`81d108d1b0e32a33e85f4b3adef74a7f616d4b9a`（第四轮成果）
+
+> 本轮只做一次本地提交；**未在 Ubuntu 实际运行，全程仿真尚未跑通**。仍然不声称 Gazebo 已正确显示或完整流程已跑通。
+
+### A. 本轮修复内容
+
+1. **Gazebo 模型搜索路径（资源搜索路径结论纠正）**：`test.world` 使用 `model://aigc_sim/meshes/marker_N.dae`。上一版只导出了 `gazebo_media_path`，但 `model://` URI 由 **`gazebo_model_path`（GAZEBO_MODEL_PATH）** 解析，与媒体路径（GAZEBO_RESOURCE_PATH，供 DAE 相对纹理 `../materials/textures/*.png`）不是一回事。已在 `package.xml` `<export>` 增加 `<gazebo_ros gazebo_model_path="${prefix}/.." />`：源空间 `${prefix}=.../src/aigc_sim`，安装空间 `${prefix}=.../share/aigc_sim`，两种布局下 `${prefix}/..` 都是「包含 `aigc_sim` 目录的目录」，加上 `aigc_sim/meshes/...` 正好落在已安装的网格文件上；`gazebo_media_path="${prefix}"` 与 meshes/materials 安装规则保留不变。**仅核对目录结构与 DAE/XML 语法解析，不代表 Gazebo 已正确显示。**
+
+2. **检测新鲜度与稳定计数**：`TaskExecutor` 记录任务开始时的 ROS 时间，任务开始时清空缓存/计数；有效检测要求 marker 自身 `header.stamp > 0`、图像采集晚于任务开始、图像年龄与接收年龄都在限内、ID/坐标系/坐标有限且 `z>0`。稳定计数**只累加严格递增的新图像时间戳**：同一帧重复读取不计数也不误判丢失、回退帧不计数（A,B,A 只算 2 不是 3）；真实丢失/过期/越限才清零。里程计同样校验 `odom.header.stamp` 有效性 + 年龄 + 接收年龄（**新鲜收到的、但带旧 header 的里程计不能证明已停车**）。
+
+3. **击打前最终门槛（击打门槛结论纠正）**：击打前重新复核——任务有效、未 shutdown、未超时、目标有效/新鲜/对准、里程计新鲜且已停、稳定帧条件成立、额度未消耗。停车判定并入最终的连续帧判定。复核失败则在剩余时间内重新搜索/对准，或按 failed/timeout 返回，**绝不在门槛未过时击打**。每点每轮至多一次击打，额度在真正触发**之前**预留（先 `_fired.add(waypoint)` 再 `shoot`，异常不会重复击打）；`allow_shot=False` 不再无条件返回成功，仅当确有可复用的先前成功结果时才记成功。
+
+4. **整项任务统一期限与中断（整项期限结论纠正）**：`task_timeout` 覆盖停车 + 搜索 + 对准 + 再次稳定 + 脉冲 + 反馈，各阶段与 `SimShooter` 传入**同一个绝对墙上 deadline**；每阶段开始与等待后都检查 shutdown 与 deadline；`_stop_and_settle` 超时/中断后**不再**回退到「最后一份里程计碰巧稳定」当作成功。`SimShooter`：启动时 shutdown/超时则不发布 `shoot`；脉冲与反馈等待都受 deadline 约束；`try/finally` 结束脉冲；中断→`interrupted`、超时→`timeout`（两者都不使用 `config success=true`）；反馈 `backend=simulated`、`hit=null`；清理有限次，超时后不再报业务成功。`TaskExecutor.execute` 用 `try/finally`；任意阶段中断→`interrupted`；`MissionRunner` 退出 130 并记 STOPPED。
+
+5. **任务参数校验（仅 `execute_tasks=true`、在任何转向/击打之前）**：`execute_tasks` 与 `shooter.success` 为布尔；`control_rate`/`task_timeout`/检测年龄为正有限数；`stable_frames`/`stop_publish_count` 为正整数（拒绝布尔，先判 `isinstance(v, bool)`）；速度/角度/稳定阈值合理有限；`search_rate ≤ max_angular_rate`；`pulse_duration` 为正；`delay` 非负有限；话题名/坐标系为非空字符串。非法→明确错误、退出 1，不产生任何转向/击打。Python 2.7 兼容（用 `math.isnan`/`math.isinf`，无 `math.isfinite`）。
+
+### B. Windows 已实际执行的检查（第五轮）
+
+| # | 检查项 | 命令 / 方法 | 结果 |
+| --- | --- | --- | --- |
+| 1 | 全部 Python 语法 | `python -m py_compile`（mission_manager.py、task_executor.py、sim_shooter.py、navigation_client.py、send_goal.py、tools/regression_test.py 等） | 通过 |
+| 2 | package.xml / launch / world / DAE XML 语法 | `xml.etree.ElementTree` 解析 | 通过 |
+| 3 | `gazebo_model_path="${prefix}/.."` 源/安装布局解析 | 核对 `${prefix}` 取值 + `aigc_sim/meshes/marker_*.dae` 存在（源空间），安装规则 `share/aigc_sim/meshes/` | 通过（仅目录结构，非 Gazebo 显示） |
+| 4 | 第一轮驼峰参数未改回 | grep 核对 `commandTopic` 等仍为驼峰 | 通过 |
+| 5 | 无个人电脑绝对路径 | 搜索 `C:\`、`/home/`、`/Users/` | 通过 |
+| 6 | UTF-8 / LF、`git diff --check` | 逐文件 + 空白检查 | 通过 |
+| 7 | 集中回归（替身 + 可控时钟） | `python tools/regression_test.py`，**65 项断言全部通过** | 通过 |
+
+### C. 集中回归（`tools/regression_test.py`，不依赖 ROS）
+
+用注入 fake `rospy`/消息模块（含 `.msg` 子模块）+ 可控时钟（`now`/`rostime`/`shutdown`）+ 替换 `_wall_clock`/`time.sleep`/`is_shutdown` 的替身，驱动 `task_executor.py`/`sim_shooter.py`/`mission_manager.py`，共 **12 组 65 项断言全部通过**（**不代表 ROS 实际运行通过**；正向任务测试通过真实检测/里程计回调喂入数据，运行真实过滤、计数与最终击打判断，未把关键判断替换为 True）：
+
+- [x] 图案/地图一致（PATTERNS 与 PNG/PGM 数据）
+- [x] 零时间戳 / 任务开始前图像 / 回退时间戳 → 拒绝
+- [x] 同一帧重复读取不重复计数（冻结时间戳到不了 `stable_frames`）
+- [x] A,B,A 只算 2 不是 3（回退不计数）
+- [x] 最终停车阶段目标丢失/漂移 → 不击打
+- [x] 新鲜收到的、但带旧 header 的里程计不能证明已停车
+- [x] `task_timeout` 短于脉冲/反馈 → 不成功
+- [x] 各阶段 shutdown → `interrupted`、退出 130、不再击打
+- [x] 已开始的脉冲在中断/超时/异常时结束（`stopshoot`）
+- [x] 先前模拟失败 → 下次调用不自动成功（`allow_shot=False` 且无先前成功 → failed）
+- [x] 错误 ID / 重复 ID / 过期 / 非有限坐标 → 仍拒绝
+- [x] 正常任务恰好击打一次、模拟成功 `hit=null`；纯导航 / 重试 / 跳过 / 取消确认 / LOST / 中断回归通过
+
+### D. 待 Ubuntu 执行的验证（第五轮）
+
+以下全部**待执行**，本轮不以下列项目通过作为提交前提；**未在 Ubuntu 实际运行，全程仿真尚未跑通**：
+
+- [ ] `catkin_make` 编译后，`model://aigc_sim/meshes/...` 在**源空间与安装空间**都能被 `gazebo_model_path` 解析（不声称 Gazebo 已正确显示）
+- [ ] `ar_track_alvar` 各 marker 自身 `header.stamp` 为正且随图像刷新（检测新鲜度依赖）
+- [ ] 检测/里程计双重新鲜度、严格递增计数、目标丢失清零在实车上成立
+- [ ] 击打前最终门槛：目标漂移/未停/超时/中断时不击打；每点至多一次击打；模拟失败不记为成功
+- [ ] `task_timeout` 覆盖整项任务（含模拟脉冲/反馈）；各阶段 shutdown→130 并结束脉冲；非法任务配置→退出 1 且无转向/击打
+- [ ] `execute_tasks=true` 三点任务 + `finish` 全流程退出码 0、记录 COMPLETED；`execute_tasks=false` 原纯导航流程不回归
+

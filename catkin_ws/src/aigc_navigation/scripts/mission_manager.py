@@ -520,6 +520,80 @@ def load_task_config():
     }
 
 
+def _task_is_positive_number(v):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    if math.isnan(v) or math.isinf(v):
+        return False
+    return v > 0
+
+
+def _task_is_nonneg_number(v):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    if math.isnan(v) or math.isinf(v):
+        return False
+    return v >= 0
+
+
+def validate_task_config(tc):
+    """Validate the AR task parameters (called only when execute_tasks=true).
+
+    Runs before any turning/shooting: an invalid task config must exit with a
+    clear error and produce no motion or shot commands.
+    """
+    if not isinstance(tc, dict):
+        return ['task config must be a dict']
+    errors = []
+
+    for key in ('output_frame', 'ar_marker_topic', 'odom_topic'):
+        v = tc.get(key)
+        if not isinstance(v, str) or not v:
+            errors.append('task %s must be a non-empty string' % key)
+
+    shooter = tc.get('shooter')
+    if not isinstance(shooter, dict):
+        errors.append('task shooter must be a dict')
+    else:
+        if not isinstance(shooter.get('topic'), str) or not shooter['topic']:
+            errors.append('task shooter.topic must be a non-empty string')
+        if not isinstance(shooter.get('success'), bool):
+            errors.append('task shooter.success must be a boolean')
+        if not _task_is_positive_number(shooter.get('pulse_duration')):
+            errors.append('task shooter.pulse_duration must be a positive '
+                          'finite number')
+        if not _task_is_nonneg_number(shooter.get('delay')):
+            errors.append('task shooter.delay must be a non-negative finite '
+                          'number')
+
+    for key in ('control_rate', 'kp', 'max_angular_rate', 'search_rate',
+                'align_tolerance', 'detection_max_age', 'receive_max_age',
+                'task_timeout', 'settle_timeout', 'odom_max_age'):
+        if not _task_is_positive_number(tc.get(key)):
+            errors.append('task %s must be a positive finite number' % key)
+
+    for key in ('odom_max_linear', 'odom_max_angular'):
+        if not _task_is_nonneg_number(tc.get(key)):
+            errors.append('task %s must be a non-negative finite number' % key)
+
+    for key in ('stable_frames', 'stop_publish_count'):
+        v = tc.get(key)
+        if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+            errors.append('task %s must be a positive integer' % key)
+
+    if not _task_is_positive_number(tc.get('stop_publish_interval')):
+        errors.append('task stop_publish_interval must be a positive finite '
+                      'number')
+
+    sr = tc.get('search_rate')
+    mr = tc.get('max_angular_rate')
+    if (_task_is_positive_number(sr) and _task_is_positive_number(mr) and
+            sr > mr):
+        errors.append('task search_rate must not exceed max_angular_rate')
+
+    return errors
+
+
 def validate_config(cfg):
     """Return a list of error strings (empty means valid)."""
     errors = []
@@ -542,6 +616,9 @@ def validate_config(cfg):
 
     if cfg.get('failure_policy') not in _VALID_POLICIES:
         errors.append('failure_policy must be one of stop/skip')
+
+    if not isinstance(cfg.get('execute_tasks'), bool):
+        errors.append('execute_tasks must be a boolean')
 
     wps = cfg.get('waypoints')
     if not isinstance(wps, list) or not wps:
@@ -609,14 +686,14 @@ def main():
 
     try:
         errors = validate_config(cfg)
-        if errors:
-            rospy.logerr('Invalid mission configuration: %s' %
-                         '; '.join(errors))
-            runner.save_record(1, STATUS_FAILED, 'config error')
-            sys.exit(1)
-
         if cfg.get('execute_tasks'):
             runner.task_cfg = load_task_config()
+            errors.extend(validate_task_config(runner.task_cfg))
+
+        if errors:
+            rospy.logerr('Invalid configuration: %s' % '; '.join(errors))
+            runner.save_record(1, STATUS_FAILED, 'config error')
+            sys.exit(1)
 
         exit_code, final_status, reason = runner.run()
     except KeyboardInterrupt:

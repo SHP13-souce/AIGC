@@ -1,26 +1,18 @@
 # -*- coding: utf-8 -*-
-"""AR test-target task executor: recognize, align, and simulated-shoot.
+"""AR test-target recognition, alignment and simulated shooting (round 4/5).
 
-Called by MissionRunner after a task waypoint's navigation has SUCCEEDED.
-One call performs, in order:
+The executor subscribes to AR markers and odometry, filters a single target by
+id/frame/freshness, turns in place until the bearing error is within tolerance
+for a number of *stable* (strictly-increasing image timestamp) frames while the
+chassis is settled, then fires one simulated shot through :class:`SimShooter`.
 
-  1. stop and confirm the chassis has settled,
-  2. rotate in place to find the target and align to it,
-  3. stop again and confirm settled,
-  4. fire a single simulated shot.
+Every stage shares one absolute wall-clock deadline derived from
+``task_timeout``, so parking, searching, aligning, re-settling, the pulse and
+the feedback wait are all bounded by the same whole-task deadline. A shutdown
+anywhere maps to ``interrupted`` and a deadline pass to ``timeout``; neither is
+ever reported as success.
 
-During navigation this module publishes nothing; it only writes /cmd_vel while
-a task is actually executing, and always publishes a finite number of zero
-velocity commands when it finishes. AR message imports are kept in this task
-module so the pure-navigation entry points never need ar_track_alvar.
-
-Detection is handled conservatively: markers are filtered by the requested
-target id, their per-marker header (stamp + frame_id) is checked, coordinates
-must be finite with z > 0, and both the image-timestamp age and the actual
-wall-clock age since the message was received are limited. A paused /clock
-therefore invalidates detections even though simulated time stops advancing.
-
-Python 2.7 / Python 3 compatible.
+Python 2.7 / Python 3 compatible (no f-strings, no keyword-only args).
 """
 import math
 import time
@@ -50,19 +42,24 @@ def _is_finite(v):
 
 
 class TaskExecutor(object):
-    """Recognize/align/shoot for one target id, with no scheduling framework."""
+    """Recognize + align + settle + shoot a single AR target."""
 
     def __init__(self, cfg):
         self.cfg = cfg
         self._cmd_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=1)
         self._shooter = SimShooter(cfg['shooter'])
 
-        # Detection state is updated ONLY in callbacks; the control loop reads
-        # it and never turns/shoots from inside a callback.
         self._markers = None
         self._markers_stamp = None
         self._odom = None
         self._odom_stamp = None
+        self._task_start_ros = None
+
+        # Per-round shot quota: which waypoints actually fired, and whether the
+        # shot succeeded. Quota is reserved *before* the trigger so an exception
+        # after publishing cannot cause a duplicate shot.
+        self._fired = set()
+        self._shot_success = {}
 
         self._subs = [
             rospy.Subscriber(cfg['ar_marker_topic'], AlvarMarkers,
@@ -70,7 +67,7 @@ class TaskExecutor(object):
             rospy.Subscriber(cfg['odom_topic'], Odometry, self._on_odom),
         ]
 
-    # -- callbacks (data update only) ------------------------------------
+    # -- callbacks (state update only) -----------------------------------
     def _on_markers(self, msg):
         self._markers = msg
         self._markers_stamp = wall_time()
@@ -79,49 +76,55 @@ class TaskExecutor(object):
         self._odom = msg
         self._odom_stamp = wall_time()
 
-    # -- helpers ----------------------------------------------------------
+    # -- low-level helpers ------------------------------------------------
     def _publish_twist(self, linear_x, angular_z):
-        t = Twist()
-        t.linear.x = linear_x
-        t.linear.y = 0.0
-        t.angular.z = angular_z
+        twist = Twist()
+        twist.linear.x = linear_x
+        twist.linear.y = 0.0
+        twist.linear.z = 0.0
+        twist.angular.x = 0.0
+        twist.angular.y = 0.0
+        twist.angular.z = angular_z
         try:
-            self._cmd_pub.publish(t)
+            self._cmd_pub.publish(twist)
         except Exception:
             pass
 
     def _stop(self):
-        """Publish zero velocity a finite number of times."""
         for _ in range(self.cfg['stop_publish_count']):
             self._publish_twist(0.0, 0.0)
             time.sleep(self.cfg['stop_publish_interval'])
 
     def _interruptible_sleep(self, seconds):
-        deadline = wall_time() + seconds
-        while wall_time() < deadline:
+        end = wall_time() + seconds
+        while wall_time() < end:
             if is_shutdown():
                 break
             time.sleep(0.01)
 
-    def _image_age(self, stamp):
+    @staticmethod
+    def _valid_stamp(stamp):
+        try:
+            return stamp.to_sec() > 0.0
+        except Exception:
+            return False
+
+    def _stamp_age(self, stamp):
         try:
             return (rospy.get_rostime() - stamp).to_sec()
         except Exception:
             return None
 
+    # -- detection / odometry freshness -----------------------------------
     def _latest_valid_detection(self, target_id):
-        """Return the single valid marker for target_id, or None.
-
-        Returns None when: no message, the message is too old (wall clock),
-        no marker matches target_id, multiple markers share the id (ambiguous,
-        not blindly picked), the per-marker header has the wrong frame or an
-        empty/too-old stamp, or the coordinates are non-finite / z <= 0.
-        """
         msg = self._markers
         if msg is None or self._markers_stamp is None:
             return None
-        # Actual receive age (wall clock): catches a paused /clock.
+        # Message must have been received recently (receive age).
         if wall_time() - self._markers_stamp > self.cfg['receive_max_age']:
+            return None
+        task_start = self._task_start_ros
+        if task_start is None:
             return None
 
         candidates = []
@@ -132,22 +135,29 @@ class TaskExecutor(object):
             if hdr.frame_id != self.cfg['output_frame']:
                 continue
             stamp = hdr.stamp
-            age = self._image_age(stamp)
-            if age is None or age < 0.0:
+            # Marker's own header stamp must be a valid positive time.
+            if not self._valid_stamp(stamp):
                 continue
-            if age > self.cfg['detection_max_age']:
+            # Image must have been captured *after* this task started.
+            try:
+                if stamp.to_sec() <= task_start.to_sec():
+                    continue
+            except Exception:
                 continue
-            x = marker.pose.pose.position.x
-            y = marker.pose.pose.position.y
-            z = marker.pose.pose.position.z
-            if not (_is_finite(x) and _is_finite(y) and _is_finite(z)):
+            # Image age (ROS clock) must be within bounds.
+            age = self._stamp_age(stamp)
+            if age is None or age < 0.0 or age > self.cfg['detection_max_age']:
                 continue
-            if z <= 0.0:
+
+            pos = marker.pose.pose.position
+            if not (_is_finite(pos.x) and _is_finite(pos.y) and
+                    _is_finite(pos.z)):
+                continue
+            if pos.z <= 0.0:
                 continue
             candidates.append(marker)
 
         if len(candidates) != 1:
-            # No marker, or multiple same-id markers: do not pick blindly.
             return None
         return candidates[0]
 
@@ -155,33 +165,53 @@ class TaskExecutor(object):
         odom = self._odom
         if odom is None or self._odom_stamp is None:
             return False
+        # Message receive age.
         if wall_time() - self._odom_stamp > self.cfg['odom_max_age']:
             return False
+        # odom header stamp must be valid and fresh: a freshly-received message
+        # carrying a stale header does NOT prove the robot stopped.
+        try:
+            hdr_stamp = odom.header.stamp
+        except Exception:
+            return False
+        if not self._valid_stamp(hdr_stamp):
+            return False
+        age = self._stamp_age(hdr_stamp)
+        if age is None or age < 0.0 or age > self.cfg['odom_max_age']:
+            return False
+
         twist = odom.twist.twist
         lin = math.hypot(twist.linear.x, twist.linear.y)
         ang = abs(twist.angular.z)
         return (lin <= self.cfg['odom_max_linear'] and
                 ang <= self.cfg['odom_max_angular'])
 
+    # -- stages ------------------------------------------------------------
     def _stop_and_settle(self, timeout, deadline):
-        """Stop and wait until odom is below thresholds, bounded by time."""
+        """Stop and wait until odometry reports the robot settled.
+
+        Returns 'ok', 'interrupted', 'timeout' or 'not_settled'. After a
+        timeout/interrupt this must NOT fall back to success just because the
+        last odom sample happened to look stable.
+        """
+        if is_shutdown():
+            return 'interrupted'
         self._publish_twist(0.0, 0.0)
         end = wall_time() + timeout
         while wall_time() < end and wall_time() < deadline:
             if is_shutdown():
-                return False
+                return 'interrupted'
             if self._odom_stable():
-                return True
+                return 'ok'
             self._publish_twist(0.0, 0.0)
             self._interruptible_sleep(0.05)
-        return self._odom_stable()
+        if is_shutdown():
+            return 'interrupted'
+        if wall_time() >= deadline:
+            return 'timeout'
+        return 'not_settled'
 
-    def _search_and_align(self, target_id, deadline):
-        """Rotate in place to find and align to the target.
-
-        Returns TASK_SUCCESS (aligned), TASK_TIMEOUT, or TASK_INTERRUPTED.
-        Only in-place rotation is commanded: linear.x/linear.y stay zero.
-        """
+    def _search_align(self, target_id, deadline):
         kp = self.cfg['kp']
         max_rate = self.cfg['max_angular_rate']
         search_rate = self.cfg['search_rate']
@@ -190,7 +220,7 @@ class TaskExecutor(object):
         period = 1.0 / self.cfg['control_rate']
 
         stable = 0
-        last_stamp = None
+        last_counted = None
 
         while wall_time() < deadline:
             if is_shutdown():
@@ -199,95 +229,128 @@ class TaskExecutor(object):
 
             det = self._latest_valid_detection(target_id)
             if det is None:
-                # No valid target: clear progress and search in place.
+                # Real loss / stale / no valid target: clear progress, search.
                 stable = 0
-                last_stamp = None
+                last_counted = None
                 self._publish_twist(0.0, search_rate)
             else:
-                x = det.pose.pose.position.x
-                z = det.pose.pose.position.z
-                error = math.atan2(x, z)
-                if abs(error) <= align_tol:
-                    # Aligned this frame. Count only a NEW image timestamp so
-                    # a 20 Hz loop cannot double-count one 15 Hz detection.
-                    if det.header.stamp != last_stamp:
-                        stable += 1
-                        last_stamp = det.header.stamp
-                    self._publish_twist(0.0, 0.0)
-                    if stable >= stable_frames:
-                        return TASK_SUCCESS
-                else:
-                    # Not aligned: clear progress and steer proportionally.
+                error = math.atan2(det.pose.pose.position.x,
+                                   det.pose.pose.position.z)
+                if abs(error) > align_tol:
+                    # Drifted off target: clear progress, steer.
                     stable = 0
-                    last_stamp = None
+                    last_counted = None
                     cmd = -kp * error
                     if cmd > max_rate:
                         cmd = max_rate
                     elif cmd < -max_rate:
                         cmd = -max_rate
                     self._publish_twist(0.0, cmd)
+                elif self._odom_stable():
+                    stamp = det.header.stamp
+                    # Only strictly-increasing NEW image timestamps count; a
+                    # same-frame re-read and a backward frame neither count nor
+                    # clear (A,B,A stays 2, not 3).
+                    if last_counted is None or \
+                            stamp.to_sec() > last_counted.to_sec():
+                        stable += 1
+                        last_counted = stamp
+                    self._publish_twist(0.0, 0.0)
+                    if stable >= stable_frames:
+                        return TASK_SUCCESS
+                else:
+                    # Aligned but not yet settled: hold progress, keep stopped.
+                    self._publish_twist(0.0, 0.0)
 
             self._interruptible_sleep(period)
 
         self._stop()
         return TASK_TIMEOUT
 
-    # -- result -----------------------------------------------------------
     @staticmethod
     def _result(status, aligned, shot, reason):
         return {'status': status, 'aligned': aligned, 'shot': shot,
                 'reason': reason}
 
-    # -- entry point ------------------------------------------------------
-    def execute(self, run_id, waypoint, target_id, allow_shot=True):
-        """Run the whole task for one waypoint and return a result dict.
+    def _final_gate_and_shoot(self, run_id, waypoint, target_id, allow_shot,
+                              deadline):
+        """Re-confirm every firing condition at the moment of shooting."""
+        if is_shutdown():
+            return self._result(TASK_INTERRUPTED, True, None,
+                                'shutdown before shoot')
+        if wall_time() >= deadline:
+            return self._result(TASK_TIMEOUT, True, None,
+                                'timeout before shoot')
 
-        ``allow_shot`` enforces "at most one simulated shot per waypoint per
-        run": when False the task still aligns but does not fire again.
-        """
-        # Reset this task's caches and state; never reuse a previous task's.
+        det = self._latest_valid_detection(target_id)
+        if det is None:
+            return self._result(TASK_FAILED, True, None,
+                                'target no longer valid before shoot')
+        error = math.atan2(det.pose.pose.position.x, det.pose.pose.position.z)
+        if abs(error) > self.cfg['align_tolerance']:
+            return self._result(TASK_FAILED, True, None,
+                                'target moved before shoot')
+        if not self._odom_stable():
+            return self._result(TASK_FAILED, True, None,
+                                'not settled before shoot')
+
+        may_shoot = allow_shot and waypoint not in self._fired
+        if not may_shoot:
+            # Quota consumed: only a prior *success* may be reused. A prior
+            # failure/timeout/interrupt is never rewritten into success.
+            if self._shot_success.get(waypoint, False):
+                return self._result(TASK_SUCCESS, True, None,
+                                    'no shot; prior success reused')
+            return self._result(TASK_FAILED, True, None,
+                                'no shot quota and no prior success')
+
+        # Reserve the quota BEFORE firing so an exception cannot double-fire.
+        self._fired.add(waypoint)
+        shot = self._shooter.shoot(run_id, waypoint, target_id,
+                                   '%s_%s' % (run_id, waypoint), deadline)
+        self._shot_success[waypoint] = (shot['status'] == 'success')
+
+        if shot['status'] == 'interrupted':
+            return self._result(TASK_INTERRUPTED, True, shot, shot['reason'])
+        if shot['status'] == 'timeout':
+            return self._result(TASK_TIMEOUT, True, shot, shot['reason'])
+        if shot['status'] == 'failed':
+            return self._result(TASK_FAILED, True, shot, shot['reason'])
+        return self._result(TASK_SUCCESS, True, shot, '')
+
+    # -- entry point --------------------------------------------------------
+    def execute(self, run_id, waypoint, target_id, allow_shot=True):
+        self._task_start_ros = rospy.get_rostime()
+        # Never reuse a previous task's cached state.
         self._markers = None
         self._markers_stamp = None
         self._odom = None
         self._odom_stamp = None
 
-        start = wall_time()
-        deadline = start + self.cfg['task_timeout']
+        deadline = wall_time() + self.cfg['task_timeout']
+        try:
+            settled = self._stop_and_settle(self.cfg['settle_timeout'],
+                                            deadline)
+            if settled == 'interrupted':
+                return self._result(TASK_INTERRUPTED, False, None,
+                                    'interrupted while settling')
+            if settled == 'timeout':
+                return self._result(TASK_TIMEOUT, False, None,
+                                    'timeout while settling')
+            if settled != 'ok':
+                return self._result(TASK_FAILED, False, None, 'did not settle')
 
-        # 1) stop and settle before searching.
-        if not self._stop_and_settle(self.cfg['settle_timeout'], deadline):
-            self._stop()
-            return self._result(TASK_FAILED, False, None, 'did not settle')
+            status = self._search_align(target_id, deadline)
+            if status != TASK_SUCCESS:
+                return self._result(status, False, None,
+                                    _REASON_BY_STATUS.get(status, ''))
 
-        # 2) search + align.
-        status = self._search_and_align(target_id, deadline)
-        if status != TASK_SUCCESS:
-            return self._result(status, False, None,
-                                _REASON_BY_STATUS.get(status, ''))
-
-        # 3) stop and settle again before shooting.
-        if not self._stop_and_settle(self.cfg['settle_timeout'], deadline):
+            return self._final_gate_and_shoot(run_id, waypoint, target_id,
+                                              allow_shot, deadline)
+        finally:
+            # Always stop turning and end any started pulse.
             self._stop()
-            return self._result(TASK_FAILED, True, None,
-                                'did not settle before shoot')
-
-        # 4) fire once (unless this waypoint already fired this run).
-        if not allow_shot:
-            self._stop()
-            return self._result(TASK_SUCCESS, True, None,
-                                'already shot; no repeat')
-
-        shot = self._shooter.shoot(run_id, waypoint, target_id,
-                                   '%s_%s' % (run_id, waypoint))
-        if is_shutdown():
-            self._stop()
-            return self._result(TASK_INTERRUPTED, True, shot,
-                                'shutdown during shoot')
-        if not shot['success']:
-            self._stop()
-            return self._result(TASK_FAILED, True, shot, shot['reason'])
-        self._stop()
-        return self._result(TASK_SUCCESS, True, shot, '')
+            self._shooter.stop_pulse()
 
     def cleanup(self):
         self._stop()

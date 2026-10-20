@@ -16,7 +16,14 @@
   <exec_depend>rviz</exec_depend>
 
   <export>
-    <!-- Make meshes/textures resolvable via model://aigc_sim/... -->
+    <!-- model://aigc_sim/... resolves against GAZEBO_MODEL_PATH, which must
+         point at the directory *containing* aigc_sim. In both the source
+         (${prefix} = .../src/aigc_sim) and install (${prefix} =
+         .../share/aigc_sim) layouts, ${prefix}/.. + aigc_sim/meshes/... lands
+         on the installed mesh files. -->
+    <gazebo_ros gazebo_model_path="${prefix}/.." />
+    <!-- Media path stays for the DAE relative texture/material references
+         (../materials/textures/*.png). -->
     <gazebo_ros gazebo_media_path="${prefix}" />
   </export>
 </package>
