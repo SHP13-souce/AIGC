@@ -285,32 +285,34 @@
   <!-- Differential drive -->
   <gazebo>
     <plugin name="diff_drive_controller" filename="libgazebo_ros_diff_drive.so">
-      <update_rate>30.0</update_rate>
+      <robotNamespace>/</robotNamespace>
+      <updateRate>30.0</updateRate>
 
-      <left_joint>left_wheel_joint</left_joint>
-      <right_joint>right_wheel_joint</right_joint>
+      <leftJoint>left_wheel_joint</leftJoint>
+      <rightJoint>right_wheel_joint</rightJoint>
 
-      <wheel_separation>${wheel_separation}</wheel_separation>
-      <wheel_diameter>${2*wheel_radius}</wheel_diameter>
+      <wheelSeparation>${wheel_separation}</wheelSeparation>
+      <wheelDiameter>${2*wheel_radius}</wheelDiameter>
+      <wheelTorque>5.0</wheelTorque>
+      <wheelAcceleration>1.0</wheelAcceleration>
 
-      <max_wheel_torque>5.0</max_wheel_torque>
-      <max_wheel_acceleration>1.0</max_wheel_acceleration>
+      <commandTopic>/cmd_vel</commandTopic>
+      <odometryTopic>/odom</odometryTopic>
+      <odometryFrame>odom</odometryFrame>
+      <robotBaseFrame>base_footprint</robotBaseFrame>
+      <odometrySource>encoder</odometrySource>
 
-      <command_topic>cmd_vel</command_topic>
-      <odometry_topic>odom</odometry_topic>
-      <odometry_frame>odom</odometry_frame>
-      <robot_base_frame>base_footprint</robot_base_frame>
-
-      <publish_odom>true</publish_odom>
-      <publish_odom_tf>true</publish_odom_tf>
-      <publish_wheel_tf>false</publish_wheel_tf>
-      <publish_wheel_joint_state>true</publish_wheel_joint_state>
+      <publishTf>true</publishTf>
+      <publishOdomTF>true</publishOdomTF>
+      <publishWheelTF>false</publishWheelTF>
+      <publishWheelJointState>true</publishWheelJointState>
     </plugin>
   </gazebo>
 
   <!-- Camera -->
   <gazebo reference="camera_link">
     <sensor type="camera" name="usb_cam_sensor">
+      <always_on>true</always_on>
       <update_rate>15.0</update_rate>
       <camera name="usb_cam">
         <horizontal_fov>1.0471975512</horizontal_fov>
@@ -325,12 +327,12 @@
         </clip>
       </camera>
       <plugin name="usb_cam_controller" filename="libgazebo_ros_camera.so">
-        <always_on>true</always_on>
-        <update_rate>15.0</update_rate>
-        <camera_name>usb_cam</camera_name>
-        <image_topic_name>image_raw</image_topic_name>
-        <camera_info_topic_name>camera_info</camera_info_topic_name>
-        <frame_name>camera_optical_frame</frame_name>
+        <robotNamespace>/</robotNamespace>
+        <cameraName>usb_cam</cameraName>
+        <imageTopicName>image_raw</imageTopicName>
+        <cameraInfoTopicName>camera_info</cameraInfoTopicName>
+        <frameName>camera_optical_frame</frameName>
+        <updateRate>0.0</updateRate>
       </plugin>
     </sensor>
   </gazebo>
@@ -357,9 +359,9 @@
         </range>
       </ray>
       <plugin name="laser_controller" filename="libgazebo_ros_laser.so">
-        <topic_name>scan</topic_name>
-        <frame_name>laser_link</frame_name>
-        <update_rate>10.0</update_rate>
+        <robotNamespace>/</robotNamespace>
+        <topicName>/scan</topicName>
+        <frameName>laser_link</frameName>
       </plugin>
     </sensor>
   </gazebo>

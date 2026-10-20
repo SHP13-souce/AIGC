@@ -17,10 +17,10 @@
 | 2 | 包名 / 依赖 / CMake | 人工核对 package.xml 与 CMakeLists.txt | 通过 |
 | 3 | launch 引用文件存在 | 检查 `sim.launch` 引用的 world/rviz/xacro 路径 | 通过 |
 | 4 | 无个人电脑绝对路径 | 全文搜索 `C:\`、`/home/`、`/Users/` | 通过 |
-| 5 | 轮关节名一致 | 比对 xacro 关节名与差速插件 `left_joint`/`right_joint` | 通过 |
-| 6 | 轮距 / 轮径一致 | 比对 xacro 属性与插件 `wheel_separation`/`wheel_diameter` | 通过 |
+| 5 | 轮关节名一致 | 比对 xacro 关节名与差速插件 `leftJoint`/`rightJoint` | 通过 |
+| 6 | 轮距 / 轮径一致 | 比对 xacro 属性与插件 `wheelSeparation`/`wheelDiameter` | 通过 |
 | 7 | 传感器话题 / frame_id 一致 | 比对插件参数与接口表 | 通过 |
-| 8 | TF 无重复发布 | 插件 `publish_wheel_tf=false`，轮 TF 由 robot_state_publisher 发布 | 通过 |
+| 8 | TF 无重复发布 | 插件 `publishWheelTF=false`，轮 TF 由 robot_state_publisher 发布 | 通过 |
 | 9 | 必要文件齐全 | 按目录结构核对 | 通过 |
 | 10 | Git diff 无无关改动 | `git status` / `git diff --stat` | 通过（仅本轮文件） |
 
@@ -43,15 +43,17 @@ PY
 ```
 
 > 注意：`robot.urdf.xacro` 包含 xacro 属性与 `${...}` 表达式，XML 语法解析通过**不等于** xacro 展开、URDF 合法或 Gazebo 运行通过。`.rviz` 为 YAML 格式，未纳入上述 XML 解析（其内容为人工核对）。
+>
+> **本次修复记录**：上一版把 ROS1 Melodic 插件参数误写成下划线名称（如 `command_topic`、`camera_name`、`topic_name`、`left_joint`、`wheel_separation`、`publish_odom` 等），这些并不是 Melodic 三个插件的有效参数名。`libgazebo_ros_diff_drive.so`、`libgazebo_ros_camera.so`、`libgazebo_ros_laser.so` 在 Melodic 中实际使用驼峰名称（如 `commandTopic`、`cameraName`、`topicName`、`leftJoint`、`wheelSeparation`）。本次已按任务单给出的 Melodic 参数修正，并显式配置 `odometrySource=encoder`；`always_on` 作为 sensor 的 SDF 原生参数，`update_rate` 仅保留在 sensor 下，插件内的下划线参数已删除。**未联网**，未能在线复核官方源码，按任务单明确参数执行；此前的“插件参数静态检查通过”结论不准确，予以纠正。
 
 ## B. 静态审查结果
 
 - **模型**：使用基础几何体（box/cylinder/sphere），无外部 STL、无在线下载；单位统一为米/千克/弧度；实体均有 visual、collision、质量和惯量。
 - **驱动轮**：圆柱绕 y 轴（`rpy="1.5708 0 0"`），关节轴 `0 1 0`，连续关节；左轮 `+y`、右轮 `-y`；驱动轮接地（轮心 z=0.035=半径）。
 - **支撑**：前后各一个低摩擦球（`mu1/mu2=0.01`），不阻碍转向。
-- **差速插件**：`libgazebo_ros_diff_drive.so`，`command_topic=cmd_vel`、`odometry_topic=odom`、`odometry_frame=odom`、`robot_base_frame=base_footprint`，编码器里程计模式；`publish_odom_tf=true` 发布 `odom → base_footprint`；`publish_wheel_tf=false`，轮 TF 交给 robot_state_publisher；`publish_wheel_joint_state=true`。
-- **相机**：`libgazebo_ros_camera.so`，640×480、15 Hz、`camera_name=usb_cam`，话题 `/usb_cam/image_raw`、`/usb_cam/camera_info`，`frame_name=camera_optical_frame`；optical frame 通过固定关节 `rpy="-1.5708 0 -1.5708"` 得到 z 前、x 右、y 下。
-- **激光**：`libgazebo_ros_laser.so`，360°、360 采样、10 Hz、`frame_id=laser_link`；扫描平面距地面约 0.20 m（墙高 0.30 m 可被扫到）。
+- **差速插件**：`libgazebo_ros_diff_drive.so`，`robotNamespace=/`、`updateRate=30`，`leftJoint=left_wheel_joint`、`rightJoint=right_wheel_joint`，`wheelSeparation=0.16`、`wheelDiameter=0.07`，`commandTopic=/cmd_vel`、`odometryTopic=/odom`、`odometryFrame=odom`、`robotBaseFrame=base_footprint`，`odometrySource=encoder`（编码器里程计）；`publishTf=true`、`publishOdomTF=true` 发布 `odom → base_footprint`；`publishWheelTF=false`（轮 TF 交给 robot_state_publisher）；`publishWheelJointState=true`。
+- **相机**：`libgazebo_ros_camera.so`，640×480，sensor 下 `update_rate=15.0`（频率由 sensor 控制，插件 `updateRate=0`）；插件 `robotNamespace=/`、`cameraName=usb_cam`、`imageTopicName=image_raw`、`cameraInfoTopicName=camera_info`、`frameName=camera_optical_frame`，`always_on` 为 sensor 的 SDF 原生参数；话题 `/usb_cam/image_raw`、`/usb_cam/camera_info`；optical frame 通过固定关节 `rpy="-1.5708 0 -1.5708"` 得到 z 前、x 右、y 下。
+- **激光**：`libgazebo_ros_laser.so`，360°、360 采样，sensor 下 `update_rate=10.0`（频率由 sensor 控制）；插件 `robotNamespace=/`、`topicName=/scan`、`frameName=laser_link`；扫描平面距地面约 0.20 m（墙高 0.30 m 可被扫到）。
 - **场地**：地面与光照均内联；围墙内净尺寸 3.6 m × 3.6 m（内侧面 ±1.8 m），墙厚 0.10 m，墙高 0.30 m；前方 0.8 m 处有彩色测试物体；机器人出生点 (0,0) 与场地、物体不重叠。
 - **启动**：`use_sim_time=true`、加载 world、xacro 生成 `robot_description`、spawn 机器人（z=0.02 防穿地）、robot_state_publisher、可选 RViz；支持 `gui`/`rviz`/`paused` 参数，默认不暂停。
 - **RViz**：Fixed Frame=`odom`，显示 RobotModel、LaserScan（`/scan`）、Image（`/usb_cam/image_raw`）、TF；不创建 map 坐标系，无额外静态 TF。

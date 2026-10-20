@@ -70,7 +70,7 @@ README.md
 | 话题 / TF | 类型 | 说明 |
 | --- | --- | --- |
 | `/cmd_vel` | `geometry_msgs/Twist` | 订阅：速度指令（差速） |
-| `/odom` | `nav_msgs/Odometry` | 发布：里程计（编码器模式） |
+| `/odom` | `nav_msgs/Odometry` | 发布：里程计（`odometrySource=encoder` 编码器模式） |
 | `odom → base_footprint` | TF | 里程计 TF，由差速插件发布 |
 | `/joint_states` | `sensor_msgs/JointState` | 轮关节状态 |
 | `/scan` | `sensor_msgs/LaserScan` | 激光雷达，frame_id=`laser_link` |
@@ -81,6 +81,8 @@ README.md
 | `base_link → camera_optical_frame` | TF | 固定关节 |
 
 坐标系约定（REP-103）：`base_link` 的 x 朝前、y 朝左、z 朝上；`camera_optical_frame` 的 z 朝前、x 朝右、y 朝下。
+
+插件参数说明：三个 Gazebo 插件均使用 ROS1 Melodic 的驼峰参数名（如 `commandTopic`、`cameraName`、`topicName`）；差速插件显式配置 `odometrySource=encoder`；相机/雷达的 `update_rate` 是 SDF sensor 原生参数，频率由 sensor 控制。
 
 ## 7. Ubuntu 依赖安装
 
