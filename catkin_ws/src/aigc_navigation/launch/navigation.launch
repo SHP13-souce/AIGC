@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<launch>
+
+  <!-- Static map served for localization and global planning. -->
+  <arg name="map_file" default="$(find aigc_navigation)/maps/test.yaml"/>
+  <arg name="rviz"     default="true"/>
+
+  <!-- Navigation nodes run on simulated time (matches sim.launch). -->
+  <param name="/use_sim_time" value="true"/>
+
+  <!-- Serve the static map on /map and the static_map service. -->
+  <node name="map_server" pkg="map_server" type="map_server" args="$(arg map_file)"/>
+
+  <!-- Localization: publishes map -> odom from laser + odometry + static map. -->
+  <node name="amcl" pkg="amcl" type="amcl" output="screen">
+    <rosparam file="$(find aigc_navigation)/config/amcl.yaml" command="load"/>
+  </node>
+
+  <!-- move_base: Navfn global planner + DWA local planner + costmaps + recovery. -->
+  <node name="move_base" pkg="move_base" type="move_base" output="screen" respawn="false">
+    <param name="base_global_planner" value="navfn/NavfnROS"/>
+    <param name="base_local_planner"  value="dwa_local_planner/DWAPlannerROS"/>
+
+    <rosparam file="$(find aigc_navigation)/config/costmap_common.yaml" command="load" ns="global_costmap"/>
+    <rosparam file="$(find aigc_navigation)/config/costmap_common.yaml" command="load" ns="local_costmap"/>
+    <rosparam file="$(find aigc_navigation)/config/global_costmap.yaml" command="load"/>
+    <rosparam file="$(find aigc_navigation)/config/local_costmap.yaml" command="load"/>
+    <rosparam file="$(find aigc_navigation)/config/move_base.yaml" command="load"/>
+    <rosparam file="$(find aigc_navigation)/config/dwa_local_planner.yaml" command="load"/>
+  </node>
+
+  <!-- Optional navigation RViz (2D pose estimate / 2D nav goal tools). -->
+  <group if="$(arg rviz)">
+    <node name="rviz" pkg="rviz" type="rviz"
+          args="-d $(find aigc_navigation)/rviz/navigation.rviz"
+          required="false"/>
+  </group>
+
+</launch>

@@ -1,12 +1,17 @@
 # AIGC 无人车仿真底座
 
-无人车挑战赛的第一轮代码：**最小仿真底座**。在 ROS1 + Gazebo 中提供一个可运动的差速机器人、测试场地、相机与激光雷达，用于后续接入导航、识别与击打等比赛功能。
+无人车挑战赛的仿真代码，目前包含两轮：
 
-> 本轮只完成机器人模型、测试场地、仿真启动、传感器配置与运行说明。导航、比赛主程序、视觉识别、对准、击打、大模型服务等**暂未实现**。
+- **第一轮**：最小仿真底座——可运动的差速机器人、测试场地、相机与激光雷达。
+- **第二轮**：单点自主导航——基于已有 ROS1 导航包的定位（AMCL）、全局路径规划（navfn）、局部规划（DWA）与避障，支持导航到单个目标点。
+
+> 单点导航已实现，但**多点巡航 / 任务调度、比赛主程序、视觉识别、对准、击打、大模型服务等暂未实现**。
 
 ---
 
 ## 1. 当前实现内容
+
+### 第一轮：仿真底座
 
 - 简化差速机器人模型（基础几何体，无外部 STL、无在线模型下载）
   - 矩形车身、左右驱动轮、前后低摩擦支撑
@@ -16,6 +21,15 @@
 - 测试场地（地面、光照、3.6 m × 3.6 m 围墙、前方彩色测试物体）
 - 启动文件 `sim.launch`（Gazebo + robot_state_publisher + 可选 RViz）
 - RViz 配置（RobotModel / LaserScan / Image / TF）
+
+### 第二轮：单点自主导航
+
+- 静态地图生成工具 `tools/generate_test_map.py`（Windows 可直接运行，从 `test.world` 碰撞几何生成 PGM + YAML）
+- 定位 AMCL（差速运动模型，`map → odom → base_footprint`）
+- 全局路径规划 `navfn/NavfnROS`，局部规划 `dwa_local_planner/DWAPlannerROS`
+- 全局 / 局部代价地图（静态地图、激光障碍层、膨胀层），避障
+- 目标点发送脚本 `scripts/send_goal.py`（Python 2.7/3 兼容）
+- 一键启动 `nav_sim.launch` 与导航 RViz 配置 `navigation.rviz`
 
 ## 2. 工作方式
 
@@ -42,6 +56,16 @@ catkin_ws/
       launch/sim.launch
       worlds/test.world
       rviz/sim.rviz
+    aigc_navigation/          # 单点自主导航（第二轮）
+      launch/navigation.launch
+      launch/nav_sim.launch
+      config/                 # AMCL / move_base / costmap / DWA 参数
+      maps/test.yaml          # 静态地图（生成工具输出，已提交）
+      maps/test.pgm
+      rviz/navigation.rviz
+      scripts/send_goal.py
+tools/
+  generate_test_map.py        # 从 test.world 生成静态地图（Python 3 标准库）
 docs/
   verification.md             # 验证记录
 README.md
@@ -67,6 +91,8 @@ README.md
 
 ## 6. 接口表
 
+### 仿真 / 机器人
+
 | 话题 / TF | 类型 | 说明 |
 | --- | --- | --- |
 | `/cmd_vel` | `geometry_msgs/Twist` | 订阅：速度指令（差速） |
@@ -79,6 +105,23 @@ README.md
 | `base_footprint → base_link` | TF | 固定关节，由 robot_state_publisher 发布 |
 | `base_link → laser_link` | TF | 固定关节 |
 | `base_link → camera_optical_frame` | TF | 固定关节 |
+
+### 导航
+
+| 话题 / TF | 类型 | 说明 |
+| --- | --- | --- |
+| `/map` | `nav_msgs/OccupancyGrid` | 静态地图（map_server 发布） |
+| `map → odom` | TF | 定位结果，由 AMCL 发布 |
+| `/initialpose` | `geometry_msgs/PoseWithCovarianceStamped` | 订阅：2D 初始位姿估计（RViz） |
+| `/move_base_simple/goal` | `geometry_msgs/PoseStamped` | 订阅：2D 导航目标（RViz） |
+| `/move_base/goal` | `move_base_msgs/MoveBaseActionGoal` | move_base Action 目标 |
+| `/move_base/feedback` | `move_base_msgs/MoveBaseActionFeedback` | move_base Action 反馈 |
+| `/move_base/result` | `move_base_msgs/MoveBaseActionResult` | move_base Action 结果 |
+| `/move_base/status` | `actionlib_msgs/GoalStatusArray` | move_base Action 状态 |
+| `/move_base/NavfnROS/plan` | `nav_msgs/Path` | 全局路径 |
+| `/move_base/DWAPlannerROS/local_plan` | `nav_msgs/Path` | 局部路径 |
+| `/move_base/global_costmap/costmap` | `nav_msgs/OccupancyGrid` | 全局代价地图 |
+| `/move_base/local_costmap/costmap` | `nav_msgs/OccupancyGrid` | 局部代价地图 |
 
 坐标系约定（REP-103）：`base_link` 的 x 朝前、y 朝左、z 朝上；`camera_optical_frame` 的 z 朝前、x 朝右、y 朝下。
 
@@ -99,10 +142,13 @@ sudo apt-get install -y \
   ros-melodic-rviz \
   ros-melodic-urdf \
   ros-melodic-tf \
-  ros-melodic-rospy
+  ros-melodic-rospy \
+  ros-melodic-navigation \
+  ros-melodic-move-base-msgs \
+  ros-melodic-actionlib
 ```
 
-`ros-melodic-urdf` 提供 `check_urdf`；`ros-melodic-tf` 提供 `tf_echo` 等 TF 检查工具；`ros-melodic-rospy` 用于下面的运动测试脚本（通常随 ROS 基础安装已包含）。
+`ros-melodic-navigation` 是导航元包，包含 `map_server`、`amcl`、`move_base`、`navfn`、`dwa_local_planner`、`clear_costmap_recovery`、`rotate_recovery`、`costmap_2d` 等；`ros-melodic-move-base-msgs`、`ros-melodic-actionlib` 供 `send_goal.py` 使用。`ros-melodic-urdf` 提供 `check_urdf`；`ros-melodic-tf` 提供 `tf_echo` 等 TF 检查工具；`ros-melodic-rospy` 用于运动测试脚本（通常随 ROS 基础安装已包含）。
 
 ## 8. Ubuntu 编译与启动
 
@@ -217,24 +263,84 @@ if __name__ == '__main__':
     main()
 ```
 
-## 11. 尚未完成的功能
+## 11. 单点自主导航（第二轮）
 
-- 导航、建图、定位
+### 11.1 地图生成（Windows 可执行）
+
+```bash
+python tools/generate_test_map.py
+```
+
+脚本只使用 Python 3 标准库（无需 ROS / numpy / OpenCV），解析 `test.world` 的静态 box 碰撞几何，输出 `catkin_ws/src/aigc_navigation/maps/test.pgm` 与 `test.yaml`。地面不作为障碍物。生成结果已提交，Ubuntu 上可直接使用，无需重新生成。
+
+地图参数：200×200 像素，分辨率 0.02 m/像素，原点 `[-2.0, -2.0, 0.0]`（覆盖 x/y ∈ [-2.0, 2.0]）。
+
+### 11.2 启动导航（Ubuntu）
+
+```bash
+source /opt/ros/melodic/setup.bash
+cd catkin_ws
+catkin_make
+source devel/setup.bash
+
+# 一键：Gazebo 仿真 + 导航栈 + 导航 RViz
+roslaunch aigc_navigation nav_sim.launch
+
+# 或：无界面仿真 + 无 RViz
+roslaunch aigc_navigation nav_sim.launch gui:=false rviz:=false
+```
+
+`nav_sim.launch` 内部包含 `sim.launch`（关闭其 RViz，避免重复开窗口）与 `navigation.launch`（map_server + AMCL + move_base + 可选导航 RViz）。若仿真已在运行，也可单独启动导航栈：
+
+```bash
+roslaunch aigc_navigation navigation.launch
+```
+
+### 11.3 发送目标点
+
+```bash
+# 默认目标 (1.2, 0, 0)
+rosrun aigc_navigation send_goal.py
+
+# 指定目标（x, y, 偏航角 rad）
+rosrun aigc_navigation send_goal.py _x:=1.2 _y:=0.0 _yaw:=0.0
+```
+
+`send_goal.py`（Python 2.7/3 兼容）通过 move_base Action 发送单个目标，只有动作结果为 `SUCCEEDED` 才算成功；超时、中止、拒绝均以非零退出码退出。退出或 Ctrl+C 时只取消**自己**发送的目标（不调用 `cancel_all_goals` 干扰其他客户端），并发布零速度停车。也可在 RViz 中用「2D Nav Goal」按钮点击目标点。
+
+### 11.4 导航参数
+
+- **定位**：AMCL，差速运动模型，帧 `map → odom → base_footprint`，初始位姿 (0, 0, 0)，粒子数 500～2000。
+- **全局规划**：`navfn/NavfnROS`，静态地图层 + 激光障碍层 + 膨胀层，规划频率约 1 Hz。
+- **局部规划**：`dwa_local_planner/DWAPlannerROS`，激光障碍层 + 膨胀层（odom 下滚动窗口 3 m × 3 m），控制频率约 5 Hz，最大前进速度 0.15 m/s，横向速度为零。
+- **代价地图**：机器人 footprint 为覆盖车身/车轮/相机的最小矩形 `[[-0.16,-0.11],[-0.16,0.11],[0.17,0.11],[0.17,-0.11]]`，膨胀半径 0.30 m。
+- **恢复行为**：保守重置、积极重置、原地旋转。
+
+### 11.5 注意事项
+
+- 导航测试时**不要**同时运行第 10 节的运动测试脚本或其他向 `/cmd_vel` 发布速度的程序，避免多个控制器争用 `/cmd_vel`。
+- 当前场地为静态；`test_object` 是固定障碍物，全局/局部路径会自动绕开它。
+
+## 12. 尚未完成的功能
+
+- 多点巡航 / 航点调度
 - 比赛主程序、任务流程
 - 模板识别 / AR 识别、视觉对准、击打
 - 大模型服务
 - 正式比赛场地与真实机器人模型（当前为临时测试参数与基础几何体）
 
-## 12. 待 Ubuntu 验证的内容
+## 13. 待 Ubuntu 验证的内容
 
-本轮在 Windows 上仅做了静态检查（XML 语法、文件引用、参数一致性等），**尚未在 Ubuntu 上实际运行**。以下内容待 Ubuntu 验证，详见 `docs/verification.md`：
+本轮在 Windows 上仅做了静态检查（XML/YAML 语法、地图生成与像素核对、脚本编译、文件引用与参数一致性等），**尚未在 Ubuntu 上实际运行**。以下内容待 Ubuntu 验证，详见 `docs/verification.md`：
 
 - `xacro` 展开、`check_urdf`
-- `catkin_make` 编译
+- `catkin_make` 编译（含 `aigc_navigation`）
 - Gazebo 启动与机器人出生/稳定
 - 话题与频率（`/odom`、`/scan`、`/usb_cam/image_raw` 等）
 - TF 树
-- 相机画面
-- 雷达测距
+- 相机画面、雷达测距
 - 前进、后退、原地转向、停车
-- 模型运动稳定性
+- 地图被 map_server 正确加载
+- AMCL 定位收敛（`map → odom` 稳定）
+- move_base 规划出全局路径、局部代价地图/避障生效
+- `send_goal.py` 导航到目标点并返回 `SUCCEEDED`

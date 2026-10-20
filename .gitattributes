@@ -24,6 +24,7 @@ docs/*.md text eol=lf
 *.png binary
 *.jpg binary
 *.jpeg binary
+*.pgm binary
 *.stl binary
 *.dae binary
 *.so binary

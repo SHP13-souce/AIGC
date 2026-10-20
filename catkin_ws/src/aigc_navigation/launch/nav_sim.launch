@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<launch>
+
+  <arg name="gui"    default="true"/>
+  <arg name="rviz"   default="true"/>
+  <arg name="paused" default="false"/>
+
+  <!-- Simulation (robot + world + sensors). sim.launch's own RViz is disabled
+       to avoid opening two windows; the navigation RViz is launched below. -->
+  <include file="$(find aigc_sim)/launch/sim.launch">
+    <arg name="gui"    value="$(arg gui)"/>
+    <arg name="rviz"   value="false"/>
+    <arg name="paused" value="$(arg paused)"/>
+  </include>
+
+  <!-- Navigation stack (map_server + AMCL + move_base + optional RViz). -->
+  <include file="$(find aigc_navigation)/launch/navigation.launch">
+    <arg name="rviz" value="$(arg rviz)"/>
+  </include>
+
+</launch>

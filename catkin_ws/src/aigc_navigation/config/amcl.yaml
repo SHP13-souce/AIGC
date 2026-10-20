@@ -1,0 +1,41 @@
+# AMCL localization parameters (differential-drive motion model).
+
+use_map_topic: false
+odom_model_type: diff
+
+# Odometry noise model (higher = more uncertainty attributed to motion).
+odom_alpha1: 0.2
+odom_alpha2: 0.2
+odom_alpha3: 0.2
+odom_alpha4: 0.2
+odom_alpha5: 0.2
+
+gui_publish_rate: 10.0
+laser_max_beams: 60
+laser_max_range: 8.0
+laser_min_range: 0.05
+
+min_particles: 500
+max_particles: 2000
+kld_err: 0.05
+kld_z: 0.99
+
+odom_frame_id: odom
+base_frame_id: base_footprint
+global_frame_id: map
+
+update_min_d: 0.05
+update_min_a: 0.10
+resample_interval: 1
+transform_tolerance: 0.5
+
+recovery_alpha_slow: 0.0
+recovery_alpha_fast: 0.0
+
+# Initial pose matches the Gazebo spawn (x=0, y=0, yaw=0).
+initial_pose_x: 0.0
+initial_pose_y: 0.0
+initial_pose_a: 0.0
+initial_cov_xx: 0.25
+initial_cov_yy: 0.25
+initial_cov_aa: 0.0685

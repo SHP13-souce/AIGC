@@ -1,0 +1,24 @@
+# Common costmap parameters, loaded into BOTH the global and local costmaps.
+
+obstacle_range: 2.5
+raytrace_range: 3.0
+
+# Rectangle covering the body (0.28 x 0.20), wheels and front camera.
+footprint: [[-0.16, -0.11], [-0.16, 0.11], [0.17, 0.11], [0.17, -0.11]]
+footprint_padding: 0.01
+
+inflation_radius: 0.30
+cost_scaling_factor: 3.0
+
+transform_tolerance: 0.5
+
+observation_sources: scan
+scan:
+  data_type: LaserScan
+  topic: /scan
+  sensor_frame: laser_link
+  marking: true
+  clearing: true
+  max_obstacle_height: 0.35
+  min_obstacle_height: 0.02
+  inf_is_valid: true
