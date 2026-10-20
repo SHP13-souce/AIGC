@@ -144,9 +144,9 @@ python -m py_compile catkin_ws/src/aigc_navigation/scripts/send_goal.py tools/ge
 - **地图元数据**（`maps/test.yaml`）：`image: test.pgm`、分辨率 0.02、origin `[-2.0,-2.0,0.0]`、`negate: 0`、`occupied_thresh: 0.65`、`free_thresh: 0.196`（黑=占据、白=空闲，符合 map_server 约定）。
 - **定位**（`amcl.yaml`）：`odom_model_type=diff`，帧 `odom`/`base_footprint`/`map`，`use_map_topic=false`（经 static_map 服务取图），粒子 500～2000，`laser_max_range=8.0` 与雷达一致，初始位姿 (0,0,0) 与 Gazebo 出生点一致。
 - **move_base**（`move_base.yaml` + launch）：`base_global_planner=navfn/NavfnROS`、`base_local_planner=dwa_local_planner/DWAPlannerROS`；规划频率 1 Hz、控制频率 5 Hz；恢复行为 conservative_reset/aggressive_reset/rotate_recovery。
-- **代价地图**：`costmap_common.yaml` 以 `ns=global_costmap` 与 `ns=local_costmap` 各加载一次；全局为 `map` 固定、静态层+障碍层+膨胀层、非滚动；局部为 `odom` 固定、障碍层+膨胀层、滚动窗口 3 m×3 m；观测源 `/scan`（marking+clearing，`max_obstacle_height=0.35`、`min_obstacle_height=0.02`）；footprint 为覆盖车身/车轮/相机的最小矩形，膨胀半径 0.30 m。
-- **DWA**（`dwa_local_planner.yaml`）：使用 DWAPlannerROS 真实参数名（非其他局部规划器参数）；`max_vel_x=0.15`、`max_vel_y=0`（差速、无横向）、`xy_goal_tolerance=0.10`、`yaw_goal_tolerance=0.15`，sim 参数与评分项齐全。
-- **send_goal.py**：Python 2.7/3 兼容；`SimpleActionClient('move_base', MoveBaseAction)`；目标在 `map` 帧；私有参数 `~x/~/y/~yaw`（默认 1.2/0/0）与 `~wait_timeout`/`~result_timeout`；只有 `GoalStatus.SUCCEEDED` 算成功；超时/退出时 `cancel_goal()`（仅取消自己的目标，不 `cancel_all_goals`）并发布零速度停车；Ctrl+C 清理并退出码 130；失败非零退出。
+- **代价地图**：`costmap_common.yaml` 以 `ns=global_costmap` 与 `ns=local_costmap` 各加载一次；全局为 `map` 固定、静态层+障碍层+膨胀层、非滚动；局部为 `odom` 固定、障碍层+膨胀层、滚动窗口 3 m×3 m；`footprint`/`footprint_padding`/`transform_tolerance` 在 costmap 顶层，`observation_sources` 及 `scan` 观测源位于 `obstacle_layer` 命名空间下（最终为 `/move_base/{global,local}_costmap/obstacle_layer/observation_sources`），`inflation_radius`/`cost_scaling_factor` 位于 `inflation_layer` 下；观测源 `/scan`（marking+clearing，`max_obstacle_height=0.35`、`min_obstacle_height=0.02`）；footprint 为覆盖车身/车轮/相机的最小矩形，膨胀半径 0.30 m。
+- **DWA**（`dwa_local_planner.yaml`）：使用 DWAPlannerROS 真实参数名（非其他局部规划器参数）；`max_vel_x=0.15`、`max_vel_y=0`（差速、无横向）、`min_vel_theta=0.10`（最小旋转速度绝对值，方向由 DWA 采样处理）、`min_vel_trans=0.02`、`vy_samples=1`、`xy_goal_tolerance=0.10`、`yaw_goal_tolerance=0.15`；不包含 `min_in_place_vel_theta`（非当前 DWAPlannerROS 参数）；sim 参数与评分项齐全；以上均为待 Ubuntu 调整的初值，未声称已调优。
+- **send_goal.py**：Python 2.7/3 兼容（`time.monotonic` 回退到 `time.time`，`Thread.daemon` 用属性设置）；`SimpleActionClient('move_base', MoveBaseAction)`；目标在 `map` 帧；私有参数 `~x/~/y/~yaw`（默认 1.2/0/0）与 `~wait_timeout`/`~result_timeout`（单位均为**实际墙上秒**，与 `/clock` 无关）；服务连接等待与目标执行均以墙上时间超时（连接等待在守护线程中完成，只等连接、不发送目标，超时后主程序退出）；目标执行轮询本客户端 Action 状态并用普通 `time.sleep`；只有 `GoalStatus.SUCCEEDED` 算成功；清理可重复调用、各步异常互不打断；仅在确实发送且尚未结束时 `cancel_goal()`（不 `cancel_all_goals`）；停车用普通 `time.sleep` 重复发布零速度；退出码 0/1/2/3/130 分别对应成功/服务不可用/超时/失败/中断。
 - **启动**：`navigation.launch` 只启动 map_server、AMCL、move_base 与可选导航 RViz，`use_sim_time=true`；`nav_sim.launch` 包含 `sim.launch`（关闭其 RViz）+ `navigation.launch`，支持 `gui`/`rviz`/`paused` 参数；参数命名空间与插件对应（`DWAPlannerROS`、costmap 插件层、`recovery_behaviors`）。
 - **RViz**（`navigation.rviz`）：Fixed Frame=`map`；显示 Map、全局/局部代价地图、RobotModel、LaserScan、TF、全局路径 `/move_base/NavfnROS/plan`、局部路径 `/move_base/DWAPlannerROS/local_plan`；工具含 2D Pose Estimate（`/initialpose`）与 2D Nav Goal（`/move_base_simple/goal`）。
 
@@ -164,3 +164,26 @@ python -m py_compile catkin_ws/src/aigc_navigation/scripts/send_goal.py tools/ge
 - [ ] 目标不可达时 move_base 中止，脚本非零退出并停车
 - [ ] RViz 各显示与「2D Nav Goal」点击导航
 - [ ] 恢复行为触发（必要时）
+- [ ] 障碍层实际订阅 `/scan`（`rosnode info /move_base` 或 `rostopic info` 确认观测源生效）
+- [ ] 新增激光可见障碍后，局部代价地图能够更新
+- [ ] 暂停仿真（`/clock` 停止）时，`send_goal.py` 仍能按墙上时间超时退出（退出码 2）
+- [ ] `send_goal.py` 运行中 Ctrl+C 后能正常取消目标并停车（退出码 130）
+
+### D. 第二轮修复记录
+
+上一版存在四处静态问题，本次已修复（地图、多点任务、视觉等未改动）：
+
+1. **依赖声明**：`CMakeLists.txt` 原用 `find_package(catkin REQUIRED COMPONENTS ...)` + `catkin_package(CATKIN_DEPENDS ...)`，而 `package.xml` 对这些组件只声明了 `exec_depend`，会触发 catkin 检查错误。已改为 `find_package(catkin REQUIRED)` + `catkin_package()`；`package.xml` 保留 `buildtool_depend(catkin)` 与各 `exec_depend`；不引入 C++ 编译目标。
+2. **costmap 参数层级**：原把 `observation_sources` 及 `scan` 放在 costmap 顶层，但 costmap_2d 的 obstacle_layer 插件从自身命名空间读取这些参数。已改为 `obstacle_layer:` 下放 `observation_sources`/`scan`/`obstacle_range`/`raytrace_range`，`inflation_layer:` 下放 `inflation_radius`/`cost_scaling_factor`；最终参数为 `/move_base/{global,local}_costmap/obstacle_layer/observation_sources`。`navigation.launch` 不变（common 文件仍分别加载到 `global_costmap` 与 `local_costmap`）。
+3. **DWA 参数**：`min_vel_theta` 改为 0.10（最小旋转速度绝对值，非右转下限，方向由采样处理）；删除非当前 DWAPlannerROS 使用的 `min_in_place_vel_theta`；`vy_samples` 改为 1（横向速度上下限仍为 0）；`min_vel_trans` 先设为 0.02。其余低速上限与评分项保留，均为待 Ubuntu 调整的初值。
+4. **send_goal.py 超时/退出**：原先 `wait_for_server`/`wait_for_result` 依赖 ROS 时间、`publish_stop` 用 `rospy.sleep`，`/clock` 不更新或仿真暂停时无法按预期结束。已改为：服务连接等待与目标执行均以墙上时间为准（`time.monotonic` 回退 `time.time`）；连接等待在守护线程中完成（只等连接、不发送目标），超时后主程序可退出；目标执行轮询本客户端 Action 状态并用普通 `time.sleep`；停车用普通 `time.sleep`；清理可重复调用、各步异常互不打断；仅在确实发送且未结束时 `cancel_goal()`（不 `cancel_all_goals`）；退出码 0/1/2/3/130。
+
+Windows 重新检查（本轮修复，均已实际执行）：
+
+- [x] XML / YAML / Python 语法（`py_compile` 校验 send_goal.py）
+- [x] CMake 与 package.xml 一致性（CMake 无 `COMPONENTS`/`CATKIN_DEPENDS`/C++ 目标；package.xml 仅 `buildtool_depend` + `exec_depend`）
+- [x] costmap 插件参数层级（模拟 rosparam 加载，确认 `obstacle_layer/observation_sources`、`inflation_layer/inflation_radius` 落在正确命名空间，global/local 均覆盖）
+- [x] DWA 参数名称与含义（`min_vel_theta=0.10`、无 `min_in_place_vel_theta`、`vy_samples=1`、`min_vel_trans=0.02`）
+- [x] send_goal.py 分支：用简单替身（stub）验证 `wait_for_server_wall` 连接/超时、`wait_for_result_wall` 成功/超时、`publish_stop` 容忍失败发布器、`yaw_to_quaternion`（替身仅验证分支逻辑，**不代表 ROS 实际运行通过**）
+
+> 纠正上一版 B 节结论：依赖声明未单独核对（CMake 与 package.xml 不一致）、costmap 观测源误放在顶层、DWA 误含 `min_in_place_vel_theta` 且 `min_vel_theta` 为负值、脚本超时依赖 ROS 时间。以上均已在本次修复中更正。

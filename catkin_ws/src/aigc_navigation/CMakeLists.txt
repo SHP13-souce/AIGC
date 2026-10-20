@@ -1,18 +1,12 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(aigc_navigation)
 
-find_package(catkin REQUIRED COMPONENTS
-  rospy
-  actionlib
-  actionlib_msgs
-  move_base_msgs
-  geometry_msgs
-  tf
-)
+# This package ships only Python scripts, config and resources: it needs the
+# catkin build tool but no build/export dependencies (declared as exec_depend
+# in package.xml). No C++ targets are built.
+find_package(catkin REQUIRED)
 
-catkin_package(
-  CATKIN_DEPENDS rospy actionlib actionlib_msgs move_base_msgs geometry_msgs tf
-)
+catkin_package()
 
 ###########
 ## Build ##
