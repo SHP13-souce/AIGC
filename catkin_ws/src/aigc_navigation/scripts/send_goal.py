@@ -16,7 +16,7 @@ Exit codes:
   1    move_base action server not available within ~wait_timeout seconds
   2    goal did not finish within ~result_timeout seconds
   3    goal finished with a non-success status (aborted/rejected/...)
-  130  interrupted (SIGINT / Ctrl+C)
+  130  interrupted / ROS shutdown (SIGINT / Ctrl+C or rospy.is_shutdown())
 
 This script is Python 2.7 / Python 3 compatible (ROS1 Melodic defaults to
 Python 2.7).
@@ -90,20 +90,22 @@ def publish_stop(pub):
 def wait_for_server_wall(client, timeout):
     """Wait for the action server, bounded by wall-clock ``timeout`` seconds.
 
-    The blocking connection wait runs in a daemon thread so a frozen /clock
-    (e.g. a paused simulation) cannot stall the deadline. The thread only
-    waits for the connection; it never sends the goal. If the deadline passes
-    first, the main program returns False and can exit (the daemon thread is
-    abandoned).
+    Returns True only when the server actually connects. The blocking
+    connection wait runs in a daemon thread so a frozen /clock (e.g. a paused
+    simulation) cannot stall the deadline; the main thread keeps watching the
+    wall clock. If ROS shuts down while waiting, the loop breaks early and the
+    (still False) result is returned so the caller can detect the shutdown via
+    rospy.is_shutdown().
     """
     connected = {'ok': False}
 
     def _connect():
         try:
-            client.wait_for_server()  # blocks until the server appears
-            connected['ok'] = True
+            # The return value of wait_for_server() decides the outcome; a
+            # mere return from the call does not imply the server connected.
+            connected['ok'] = bool(client.wait_for_server())
         except Exception:
-            pass
+            connected['ok'] = False
 
     thread = threading.Thread(target=_connect)
     thread.daemon = True  # set as attribute for Python 2.7 compatibility
@@ -120,7 +122,9 @@ def wait_for_server_wall(client, timeout):
 def wait_for_result_wall(client, timeout):
     """Poll this client's action state, bounded by wall-clock ``timeout``.
 
-    Returns the terminal GoalStatus, or None if the deadline passes first.
+    Returns the terminal GoalStatus, or None if the deadline passes first or
+    ROS shuts down. The caller must distinguish those two cases by checking
+    rospy.is_shutdown().
     """
     deadline = wall_time() + timeout
     while wall_time() < deadline:
@@ -169,12 +173,35 @@ def main():
 
     rospy.on_shutdown(cancel_and_stop)
 
+    def shutdown_exit():
+        # ROS shutdown is an interrupt, not a navigation failure or timeout:
+        # report it as 130 after cleaning up.
+        rospy.logwarn('ROS shutdown detected; cleaning up.')
+        cancel_and_stop()
+        sys.exit(130)
+
+    # --- Wait for the action server --------------------------------------
     rospy.loginfo('Waiting for move_base action server (wall timeout %.1fs)...',
                   wait_timeout)
-    if not wait_for_server_wall(client, wait_timeout):
+    try:
+        connected = wait_for_server_wall(client, wait_timeout)
+    except KeyboardInterrupt:
+        rospy.logwarn('Interrupted while waiting for server; cleaning up.')
+        cancel_and_stop()
+        sys.exit(130)
+
+    if rospy.is_shutdown():
+        shutdown_exit()
+    if not connected:
         rospy.logerr('move_base action server not available within %.1fs',
                      wait_timeout)
         sys.exit(1)
+
+    # --- Send the goal ----------------------------------------------------
+    # A shutdown can arrive at any moment (SIGINT may not re-raise
+    # KeyboardInterrupt), so re-check right before sending.
+    if rospy.is_shutdown():
+        shutdown_exit()
 
     goal = MoveBaseGoal()
     goal.target_pose.header.frame_id = 'map'
@@ -187,6 +214,7 @@ def main():
     client.send_goal(goal)
     goal_state['sent'] = True
 
+    # --- Wait for the result ---------------------------------------------
     try:
         final_state = wait_for_result_wall(client, result_timeout)
     except KeyboardInterrupt:
@@ -194,6 +222,8 @@ def main():
         cancel_and_stop()
         sys.exit(130)
 
+    if rospy.is_shutdown():
+        shutdown_exit()
     if final_state is None:
         rospy.logerr('Goal not finished within %.1fs (wall clock); cancelling.',
                      result_timeout)
