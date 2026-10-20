@@ -168,5 +168,112 @@
       <pose>0.8 0 0.15 0 0 0</pose>
     </model>
 
+    <!--
+      AR test target boards (round 4). These are TEST targets, not the
+      official competition targets. Each board is a white 0.20 m x 0.20 m x
+      0.02 m slab carrying a 0.09 m x 0.09 m marker texture (marker_size =
+      9 cm). The model-level pose stays axis-aligned (zero rotation) so the
+      existing box map generator keeps working; the marker's orientation is
+      applied inside its <visual>.
+    -->
+    <model name="ar_target_0">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>0.20 0.02 0.20</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="backboard">
+          <geometry>
+            <box>
+              <size>0.20 0.02 0.20</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.9 0.9 0.9 1</ambient>
+            <diffuse>0.9 0.9 0.9 1</diffuse>
+          </material>
+        </visual>
+        <visual name="marker">
+          <pose>0 -0.011 0 1.57079632679 0 0</pose>
+          <geometry>
+            <mesh>
+              <uri>model://aigc_sim/meshes/marker_0.dae</uri>
+            </mesh>
+          </geometry>
+        </visual>
+      </link>
+      <pose>1.2 0.65 0.15 0 0 0</pose>
+    </model>
+
+    <model name="ar_target_1">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>0.02 0.20 0.20</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="backboard">
+          <geometry>
+            <box>
+              <size>0.02 0.20 0.20</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.9 0.9 0.9 1</ambient>
+            <diffuse>0.9 0.9 0.9 1</diffuse>
+          </material>
+        </visual>
+        <visual name="marker">
+          <pose>0.011 0 0 1.57079632679 0 1.57079632679</pose>
+          <geometry>
+            <mesh>
+              <uri>model://aigc_sim/meshes/marker_1.dae</uri>
+            </mesh>
+          </geometry>
+        </visual>
+      </link>
+      <pose>0.55 1.0 0.15 0 0 0</pose>
+    </model>
+
+    <model name="ar_target_2">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>0.20 0.02 0.20</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="backboard">
+          <geometry>
+            <box>
+              <size>0.20 0.02 0.20</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.9 0.9 0.9 1</ambient>
+            <diffuse>0.9 0.9 0.9 1</diffuse>
+          </material>
+        </visual>
+        <visual name="marker">
+          <pose>0 0.011 0 1.57079632679 0 3.14159265359</pose>
+          <geometry>
+            <mesh>
+              <uri>model://aigc_sim/meshes/marker_2.dae</uri>
+            </mesh>
+          </geometry>
+        </visual>
+      </link>
+      <pose>-1.0 0.35 0.15 0 0 0</pose>
+    </model>
+
   </world>
 </sdf>

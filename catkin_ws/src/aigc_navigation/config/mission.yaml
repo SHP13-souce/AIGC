@@ -15,22 +15,26 @@ cancel_timeout: 3.0    # wait for cancellation confirmation after a timeout
 max_retries: 1         # at most 1 retry after the first failure (2 tries total)
 failure_policy: stop   # stop | skip
 dwell_time: 0.5        # stay at a task point before leaving (seconds)
+execute_tasks: false   # false = navigation only; true = AR recognize/align/shoot
 
 waypoints:
   - name: task_1
     kind: task
+    target_id: 0       # AR test target id (0/1/2; not official targets)
     x: 1.2
     y: 0.0
     yaw: 1.57079632679
 
   - name: task_2
     kind: task
+    target_id: 1
     x: 1.2
     y: 1.0
     yaw: 3.14159265359
 
   - name: task_3
     kind: task
+    target_id: 2
     x: -1.0
     y: 1.0
     yaw: -1.57079632679

@@ -303,3 +303,74 @@ Windows 重新检查（本轮修复，均已实际执行；用简单替身 stub 
   - [x] 缺少 kind → 配置校验失败、退出 1、零发送
   - [x] 既有全成功/重试/停止/跳过/transit 失败/finish 失败/超时取消确认，及 send_goal.py 各分支，全部保持通过
 - [x] `git diff --check` 无空白错误；UTF-8 / LF 逐文件检查通过
+
+---
+
+## 第四轮：AR 测试靶识别、对准与模拟击打
+
+本轮范围：官方 `ar_track_alvar` 测试靶检测、按方位误差原地对准、`/shoot` 接口模拟击打、串联现有比赛主流程；新增 `task_executor.py`、`sim_shooter.py`、`config/task.yaml`、`launch/ar_detector.launch`、`launch/task_mission_sim.launch`、三个测试靶 DAE/PNG 资源，并更新 `mission_manager.py`、`mission.yaml`、`test.world`、地图、package.xml、CMakeLists.txt。
+
+起始（基线）commit：`6a9c0414ac990854591d0f77a94b173ef87f5847`
+
+> 本轮只做一次本地提交；**未在 Ubuntu 实际运行，全程仿真尚未跑通**。识别对象是 **9×9 AR 测试靶（非正式比赛靶）**；击打为进程内**模拟**（`backend=simulated`、`hit=null`），不声称“实测命中”。
+
+### A. Windows 已实际执行的检查（第四轮）
+
+| # | 检查项 | 命令 / 方法 | 结果 |
+| --- | --- | --- | --- |
+| 1 | 全部 Python 语法 | `python -m py_compile`（mission_manager.py、send_goal.py、navigation_client.py、task_executor.py、sim_shooter.py、__init__.py、setup.py、两个 tools） | 通过 |
+| 2 | 全部 XML 语法 | `xml.etree.ElementTree` 解析 package.xml、8 个 launch、test.world、3 个 DAE | 通过 |
+| 3 | 全部 YAML 语法 | `yaml.safe_load`（8 个 config 含新增 task.yaml） | 通过 |
+| 4 | PNG 尺寸/内容 | 解析 PNG IHDR/IDAT，核对 180×180、灰度（color type 0），81 格逐一与生成器 PATTERNS 一致 | 通过 |
+| 5 | DAE 纹理引用 | 解析 `<init_from>`，相对路径解析后文件存在；无 CRLF | 通过 |
+| 6 | 地图含测试靶障碍 | 解析 PGM：200×200、maxval 255、像素 40000；占据像素 4160（墙+物体+三靶板） | 通过 |
+| 7 | 依赖 / launch 一致性 | 核对 package.xml 新增 exec_depend、ar_detector.launch 参数、task_mission_sim.launch 引用与 `gazebo_media_path` 导出 | 通过 |
+| 8 | 无个人电脑绝对路径 | 搜索 `C:\`、`/home/`、`/Users/` | 通过 |
+| 9 | UTF-8 / LF | 逐文件检查 BOM、CRLF、UTF-8 | 通过 |
+| 10 | 第一轮驼峰参数未改回 | grep 核对 `commandTopic` 等仍为驼峰 | 通过 |
+| 11 | Git diff 无空白错误 | `git diff --check` | 通过 |
+
+### B. 替身（stub）检查（第四轮，不依赖 ROS）
+
+用注入 fake `rospy`/消息类型/`actionlib`/`tf` 的替身驱动 `task_executor.py`、`sim_shooter.py`、`mission_manager.py` 与 `navigation_client.py`，验证分支逻辑（**不代表 ROS 实际运行通过**）。共 **79 项断言全部通过**，覆盖：
+
+- [x] 检测过滤：无消息 / 错误 ID / 错误坐标系 / 图像时间戳过旧 / `z==0` / 坐标非有限 / 同 id 多个 marker / 墙上接收过旧 → 均不判为有效目标
+- [x] 转向符号：目标偏右（`x>0`）→ `error>0` → `angular.z<0`（原地右转），且全程 `linear.x/y=0`
+- [x] 无目标全流程 → 超时、不击打、不发布 `shoot`
+- [x] 对准成功 → 成功、`aligned=true`、恰好一次模拟击打、`hit=null`、任务结束发布零速度
+- [x] 同一图像时间戳不重复累计稳定次数（冻结时间戳永远到不了 `stable_frames`）
+- [x] 每点每轮最多一次击打（`allow_shot=False` → 不重复击打，理由为 already shot）
+- [x] 模拟击打失败 → 任务记为 failed（不记为成功），反馈 `success=false`、`reason` 记录
+- [x] 未停车稳定（`/odom` 运动/过旧）→ 不击打、failed、reason=did not settle
+- [x] 中断 → interrupted、停止转向（末条指令零速度）、不击打
+- [x] 模拟脉冲：`shoot` 发布、`cleanup` 幂等结束脉冲（恰好一次 `stopshoot`）
+- [x] 下一任务不复用上一任务缓存（`execute` 开头清空 marker/odom 缓存）
+- [x] 导航阶段任务模块零速度发布（构造 TaskExecutor 不发布任何速度）
+- [x] `_resolve_target_id`：默认映射 task_1/2/3→0/1/2、显式 `target_id` 优先、未知名→None
+- [x] 配置校验：`execute_tasks=true` 时任务点必须能解析出非负整数 `target_id`；`false` 时不校验
+- [x] `_run_task_waypoint`：成功继续（记录 navigation_result/target_id/task）、失败+stop→退出 2、失败+skip→PARTIAL、中断→退出 130（非超时）、同航点第二次 `allow_shot=False`
+- [x] `execute_tasks=false` 原纯导航流程仍退出 0、记录 navigation_result、不写 task 详情、不调用任务执行器
+- [x] 导航客户端回归：目标所有权仅在确定终态释放、LOST 保留所有权、旧目标未确认不发送新目标、取消仅在持有目标时发出、取消确认以确定终态为准、LOST 不算取消确认
+
+### C. 静态审查结果（第四轮）
+
+- **检测**（`ar_detector.launch`）：官方 `ar_track_alvar` 的 `individualMarkersNoKinect`；`marker_size=9.0` cm、`marker_resolution=5`、`marker_margin=2`、`output_frame=camera_optical_frame`；重映射 `camera_image`/`camera_info` 到 `/usb_cam/*`；不复制源码、不重实现、不改为 OpenCV ArUco。
+- **任务执行**（`task_executor.py`）：回调只更新数据（marker/odom 及各自墙上时间戳），控制循环只读数据、不在回调里转向/击打；按 `target_id` 过滤、同 id 多个不盲取；读 marker 自身 `header.stamp`/`header.frame_id`（**不读**容器 header 或 `pose.header`）；坐标有限且 `z>0`；双重新鲜度（图像时间戳年龄 ≤ 0.3 s + 墙上接收年龄 ≤ 0.5 s，`/clock` 暂停使检测失效）；`error=atan2(x,z)`、`angular.z=clamp(-kp·error,±max)`、仅原地；同一图像时间戳不重复计数、丢失清零；未停车稳定不击打；结束时发布有限次零速度；lazy import `TaskExecutor`，纯导航入口不 import `ar_track_alvar_msgs`。
+- **模拟击打**（`sim_shooter.py`）：进程内，`/shoot`（`std_msgs/String`）发 `shoot`→`stopshoot`，可中断、`cleanup` 幂等结束脉冲；每次调用新建反馈，不复用上次结果；`hit=null`、`backend=simulated`；结果由 `shooter.success` 配置。
+- **主流程集成**（`mission_manager.py`）：`execute_tasks` 默认 `false`（原流程不变）；`true` 时在 `task` 航点导航成功后执行任务，成功继续、失败按 `failure_policy` 停止/跳过、中断→130（非超时）、跳过→PARTIAL、finish 失败不算完成；记录区分 `navigation_result`/`task`/`final result`，新增 `mission_mode`/`target_id`/对准结果/击打反馈/失败原因。
+- **测试靶资源**：3 块 0.20×0.20×0.02 m 白板 + 0.09 m 黑色图案，中心高 0.15 m；模型级零旋转（碰撞盒分别为 0.20×0.02×0.20 或 0.02×0.20×0.20），marker 视觉用 DAE（0.09 m 平面、UV 映射）+ `gazebo_media_path` 的 `model://` URI；已纳入静态地图。
+- **启动/依赖**：`task_mission_sim.launch` 一次启动（nav_sim + ar_detector + mission_manager，`execute_tasks=true`），支持 `gui`/`rviz`/`paused`/`mission_file`/`task_file`/`log_dir`，不重复启动 Gazebo/导航/RViz；package.xml 新增 `ar_track_alvar`/`ar_track_alvar_msgs`/`std_msgs`/`nav_msgs`。
+
+### D. 待 Ubuntu 执行的验证（第四轮）
+
+以下全部**待执行**，本轮不以下列项目通过作为提交前提；**未在 Ubuntu 实际运行，全程仿真尚未跑通**：
+
+- [ ] `catkin_make` 编译（含新增 Python 模块与 `gazebo_media_path` 导出、DAE/纹理安装路径）
+- [ ] 三块测试靶在 Gazebo 中正确显示，纹理无镜像/倒置、方向正确（图案非左右对称，朝向影响识别）
+- [ ] `ar_track_alvar` 启动、识别到 ID0/1/2，`/ar_pose_marker` 各 marker 自身 header（stamp/frame_id）正确
+- [ ] 检测双重新鲜度、同帧不重复计数、目标丢失清零、转向符号在实车上成立
+- [ ] 对准稳定计数与模拟击打反馈（`shoot`/`stopshoot` 时序）、每点最多一次击打、模拟失败不记为成功
+- [ ] `execute_tasks=true` 三点任务 + `finish` 全流程：退出码 0、记录 COMPLETED，且逐航点记录含 navigation_result/target_id/task/击打反馈
+- [ ] `execute_tasks=false` 时原纯导航流程不回归（第三轮各分支）
+- [ ] 暂停仿真（`/clock` 停止）时任务/就绪按墙上时间超时或退出；中断退出 130 并结束模拟脉冲
+

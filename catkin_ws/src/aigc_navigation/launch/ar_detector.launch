@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<launch>
+
+  <!-- AR test-target detection using the official ROS Melodic ar_track_alvar
+       package (individualMarkersNoKinect). Detected markers are published as
+       ar_track_alvar_msgs/AlvarMarkers on /ar_pose_marker; each marker's own
+       header carries the image timestamp and output frame. -->
+  <node pkg="ar_track_alvar" type="individualMarkersNoKinect"
+        name="ar_track_alvar" output="screen" required="false">
+
+    <remap from="camera_image" to="/usb_cam/image_raw"/>
+    <remap from="camera_info" to="/usb_cam/camera_info"/>
+
+    <!-- Marker size is in cm: the 9x9 test markers are 0.09 m = 9 cm. -->
+    <param name="marker_size" value="9.0"/>
+    <param name="marker_resolution" value="5"/>
+    <param name="marker_margin" value="2"/>
+    <param name="output_frame" value="camera_optical_frame"/>
+
+    <param name="max_new_marker_error" value="0.08"/>
+    <param name="max_track_error" value="0.2"/>
+    <param name="max_frequency" value="15.0"/>
+  </node>
+
+</launch>

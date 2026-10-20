@@ -5,6 +5,6 @@ find_package(catkin REQUIRED)
 
 catkin_package()
 
-install(DIRECTORY launch worlds rviz
+install(DIRECTORY launch worlds rviz meshes materials
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )

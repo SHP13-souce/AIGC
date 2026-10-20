@@ -16,5 +16,7 @@
   <exec_depend>rviz</exec_depend>
 
   <export>
+    <!-- Make meshes/textures resolvable via model://aigc_sim/... -->
+    <gazebo_ros gazebo_media_path="${prefix}" />
   </export>
 </package>

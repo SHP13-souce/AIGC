@@ -1,12 +1,13 @@
 # AIGC 无人车仿真底座
 
-无人车挑战赛的仿真代码，目前包含三轮：
+无人车挑战赛的仿真代码，目前包含四轮：
 
 - **第一轮**：最小仿真底座——可运动的差速机器人、测试场地、相机与激光雷达。
 - **第二轮**：单点自主导航——基于已有 ROS1 导航包的定位（AMCL）、全局路径规划（navfn）、局部规划（DWA）与避障，支持导航到单个目标点。
-- **第三轮**：全程航点导航与比赛主流程骨架——按配置顺序导航多个航点，到达任务点调用（占位）任务接口，含失败重试、超时/中断处理与 JSON 运行记录。
+- **第三轮**：全程航点导航与比赛主流程骨架——按配置顺序导航多个航点，到达任务点调用任务接口，含失败重试、超时/中断处理与 JSON 运行记录。
+- **第四轮**：AR 测试靶识别、对准与模拟击打——接入官方 ar_track_alvar 识别测试靶、按方位误差原地对准、调用 `/shoot` 接口模拟击打，串联现有比赛流程。
 
-> 航点导航与比赛主流程骨架已实现，但**视觉识别、对准、击打、大模型服务、正式比赛场地与真实机器人模型等暂未实现**。
+> 已接入 **AR 测试靶**（9×9 测试图案，**非正式比赛靶**）的识别、对准与模拟击打；**大模型服务、正式比赛场地、正式比赛靶与真实机器人模型等暂未实现**，击打为进程内**模拟**（无弹道/射线命中检测，`hit` 恒为 `null`，不声称“实测命中”）。
 
 ---
 
@@ -63,26 +64,39 @@ catkin_ws/
   src/
     aigc_description/         # 机器人模型（URDF/xacro）
       urdf/robot.urdf.xacro
-    aigc_sim/                 # 仿真启动、场地、RViz
+    aigc_sim/                 # 仿真启动、场地、RViz、测试靶资源
       launch/sim.launch
       worlds/test.world
       rviz/sim.rviz
-    aigc_navigation/          # 单点导航（第二轮）+ 全程航点导航（第三轮）
+      meshes/marker_0.dae      # AR 测试靶白板+图案网格（第四轮）
+      meshes/marker_1.dae
+      meshes/marker_2.dae
+      materials/textures/marker_0.png   # 180×180 灰度测试图案（第四轮）
+      materials/textures/marker_1.png
+      materials/textures/marker_2.png
+    aigc_navigation/          # 单点导航（第二轮）+ 全程航点导航（第三轮）+ AR 任务（第四轮）
       launch/navigation.launch
       launch/nav_sim.launch
       launch/mission.launch      # 仅航点任务管理器（第三轮）
       launch/mission_sim.launch  # 仿真 + 导航栈 + 任务管理器（第三轮）
+      launch/ar_detector.launch      # ar_track_alvar 测试靶检测（第四轮）
+      launch/task_mission_sim.launch # 仿真 + 导航 + AR + 任务（第四轮）
       config/                 # AMCL / move_base / costmap / DWA 参数
-      config/mission.yaml     # 航点任务配置（第三轮）
-      maps/test.yaml          # 静态地图（生成工具输出，已提交）
+      config/mission.yaml     # 航点任务配置（第三轮，第四轮加 execute_tasks/target_id）
+      config/task.yaml        # AR 任务参数（第四轮）
+      maps/test.yaml          # 静态地图（生成工具输出，已提交，第四轮含测试靶障碍）
       maps/test.pgm
       rviz/navigation.rviz
       scripts/send_goal.py
-      scripts/mission_manager.py   # 航点任务管理器（第三轮）
-      src/aigc_navigation/        # 共享 Python 模块（第三轮）
+      scripts/mission_manager.py   # 航点任务管理器（第三轮，第四轮接入任务）
+      src/aigc_navigation/        # 共享 Python 模块（第三轮起）
+        navigation_client.py      # 共享导航客户端
+        sim_shooter.py            # 模拟击打后端（第四轮）
+        task_executor.py          # 识别/对准/击打任务执行（第四轮）
       setup.py                    # catkin Python 模块安装（第三轮）
 tools/
   generate_test_map.py        # 从 test.world 生成静态地图（Python 3 标准库）
+  generate_test_markers.py    # 生成测试靶灰度 PNG（Python 3 标准库，第四轮）
 docs/
   verification.md             # 验证记录
 README.md
@@ -140,6 +154,15 @@ README.md
 | `/move_base/global_costmap/costmap` | `nav_msgs/OccupancyGrid` | 全局代价地图 |
 | `/move_base/local_costmap/costmap` | `nav_msgs/OccupancyGrid` | 局部代价地图 |
 
+### AR 测试靶任务（第四轮）
+
+| 话题 | 类型 | 说明 |
+| --- | --- | --- |
+| `/ar_pose_marker` | `ar_track_alvar_msgs/AlvarMarkers` | ar_track_alvar 检测结果，`output_frame=camera_optical_frame` |
+| `/shoot` | `std_msgs/String` | 击打接口，命令 `shoot` / `stopshoot`（本轮由模拟后端收发） |
+
+> AR 检测使用官方 `ar_track_alvar` 的 `individualMarkersNoKinect`（**不重实现检测、不改为 OpenCV ArUco**）。每个 marker 的**自身 header**（`marker.header.stamp` + `marker.header.frame_id`）才是权威来源，**不读取**容器消息 header 或 `pose.header`。
+
 坐标系约定（REP-103）：`base_link` 的 x 朝前、y 朝左、z 朝上；`camera_optical_frame` 的 z 朝前、x 朝右、y 朝下。
 
 插件参数说明：三个 Gazebo 插件均使用 ROS1 Melodic 的驼峰参数名（如 `commandTopic`、`cameraName`、`topicName`）；差速插件显式配置 `odometrySource=encoder`；相机/雷达的 `update_rate` 是 SDF sensor 原生参数，频率由 sensor 控制。
@@ -162,10 +185,12 @@ sudo apt-get install -y \
   ros-melodic-rospy \
   ros-melodic-navigation \
   ros-melodic-move-base-msgs \
-  ros-melodic-actionlib
+  ros-melodic-actionlib \
+  ros-melodic-ar-track-alvar \
+  ros-melodic-ar-track-alvar-msgs
 ```
 
-`ros-melodic-navigation` 是导航元包，包含 `map_server`、`amcl`、`move_base`、`navfn`、`dwa_local_planner`、`clear_costmap_recovery`、`rotate_recovery`、`costmap_2d` 等；`ros-melodic-move-base-msgs`、`ros-melodic-actionlib` 供 `send_goal.py` 使用。`ros-melodic-urdf` 提供 `check_urdf`；`ros-melodic-tf` 提供 `tf_echo` 等 TF 检查工具；`ros-melodic-rospy` 用于运动测试脚本（通常随 ROS 基础安装已包含）。
+`ros-melodic-navigation` 是导航元包，包含 `map_server`、`amcl`、`move_base`、`navfn`、`dwa_local_planner`、`clear_costmap_recovery`、`rotate_recovery`、`costmap_2d` 等；`ros-melodic-move-base-msgs`、`ros-melodic-actionlib` 供 `send_goal.py` 使用；`ros-melodic-ar-track-alvar` 与 `ros-melodic-ar-track-alvar-msgs` 供第四轮 AR 检测使用（只依赖官方包，不复制其源码）。`ros-melodic-urdf` 提供 `check_urdf`；`ros-melodic-tf` 提供 `tf_echo` 等 TF 检查工具；`ros-melodic-rospy` 用于运动测试脚本（通常随 ROS 基础安装已包含）。
 
 ## 8. Ubuntu 编译与启动
 
@@ -363,7 +388,8 @@ rosrun aigc_navigation send_goal.py _x:=1.2 _y:=0.0 _yaw:=0.0
 | `max_retries` | 1 | 首次失败后最多重试次数（共 2 次尝试），非负整数 |
 | `failure_policy` | `stop` | 任务点失败策略：`stop` 停止 / `skip` 跳过（最终 PARTIAL） |
 | `dwell_time` | 0.5 | 到达任务点后的停留秒数 |
-| `waypoints` | 见文件 | 有序列表，每项 `name`/`kind`/`x`/`y`/`yaw`，`finish` 必须最后 |
+| `execute_tasks` | `false` | `true` 时在任务点导航成功后执行 AR 识别/对准/模拟击打；`false` 时保持原纯导航流程 |
+| `waypoints` | 见文件 | 有序列表，每项 `name`/`kind`/`x`/`y`/`yaw`；`task` 项可含 `target_id`（0/1/2，缺省按 `task_1/2/3 → 0/1/2` 映射）；`finish` 必须最后 |
 
 修改 `mission.yaml` 后重新 `roslaunch` 即可生效。
 
@@ -415,13 +441,84 @@ roslaunch aigc_navigation mission.launch
 - 目标所有权只在确定终态（SUCCEEDED/ABORTED/REJECTED/PREEMPTED/RECALLED）释放；LOST/取消超时/异常/shutdown 保留所有权，清理可重试取消；旧目标未确认时不发送新目标。
 - 取消确认期间 shutdown 视为中断（退出 130、状态 STOPPED），与普通“取消未确认”（退出 2）区分；`kind` 字段必填且限 `task`/`transit`/`finish`。
 
-## 13. 尚未完成的功能
+## 13. AR 测试靶任务（第四轮）
 
-- 视觉识别（模板/AR）、对准、击打（任务接口当前为占位）
+本轮把“识别、对准、击打”接入现有比赛流程：导航到任务点成功后，用官方 `ar_track_alvar` 识别**测试靶**（9×9 图案），按方位误差原地对准，再通过 `/shoot` 接口做一次**模拟**击打，最后到达 `finish` 保存结果。
+
+### 13.1 主流程（`execute_tasks: true`）
+
+`task_mission_sim.launch` 将 `mission_manager` 的 `execute_tasks` 置为 `true`。对每个 `task` 航点：
+
+1. `move_base` 导航成功后**先停车并等待车身稳定**（读取 `/odom`，线/角速度低于阈值）；
+2. `task_executor.py` 原地旋转搜索目标：无检测时以 `search_rate` 低速搜索，检测到后按 `error = atan2(x, z)` 比例转向（`angular.z = clamp(-kp·error)`，仅原地、无平移）；
+3. 连续 `stable_frames` 个**不同图像时间戳**的对准帧（`|error| ≤ align_tolerance`）判定对准；
+4. 再次停车稳定后调用 `sim_shooter.py` 发一次模拟击打；
+5. 成功后继续下一任务点；失败按 `failure_policy` 停止/跳过；中断退出 130（非超时）；每点每轮**最多一次**模拟击打。
+
+### 13.2 测试靶资源
+
+- 三个白色靶板（0.20 × 0.20 × 0.02 m）作为静态障碍加入 `test.world`，黑色图案 0.09 m、中心高 0.15 m：ID0 中心 (1.2, 0.65, 0.15) 朝 -y，ID1 (0.55, 1.0, 0.15) 朝 +x，ID2 (-1.0, 0.35, 0.15) 朝 +y。
+- 图案为 180×180 无损灰度 PNG（`tools/generate_test_markers.py`，Python 3 标准库生成并已提交），配 COLLADA 网格 `meshes/marker_*.dae`（0.09 m 平面、UV 映射、白色背板碰撞）；`aigc_sim` 导出 `gazebo_media_path`，网格以 `model://aigc_sim/meshes/...` 引用。
+- 三块靶板已纳入静态地图（`test.pgm`/`test.yaml` 重新生成并提交）。
+
+### 13.3 AR 检测（`ar_detector.launch`）
+
+使用官方 `ar_track_alvar` 的 `individualMarkersNoKinect`（**不复制源码、不重实现检测、不改为 OpenCV ArUco**）：
+
+- `marker_size=9.0`（cm）、`marker_resolution=5`、`marker_margin=2`、`output_frame=camera_optical_frame`；
+- 重映射 `camera_image → /usb_cam/image_raw`、`camera_info → /usb_cam/camera_info`；
+- 结果发布到 `/ar_pose_marker`（`ar_track_alvar_msgs/AlvarMarkers`），按 marker 的**自身 header**（`stamp` 为图像时间戳、`frame_id` 为输出帧）读取。
+
+### 13.4 检测稳健性（`task_executor.py`）
+
+- 按 `target_id` 过滤；同 id 多个 marker 时不盲取；坐标必须有限且 `z > 0`；`frame_id` 必须等于 `output_frame`；
+- 双重新鲜度：图像时间戳年龄 ≤ `detection_max_age`，且消息收到的墙上年龄 ≤ `receive_max_age`（`/clock` 暂停会使检测失效）；
+- 同一图像时间戳不重复累计稳定次数（20 Hz 控制环不会把 15 Hz 检测多算）；目标丢失清零计数；只有任务开始后新到的检测才被接受；
+- 未停车稳定（`/odom` 线/角速度超阈值）不击打；任务结束时发布有限次零速度并结束模拟脉冲。
+
+### 13.5 模拟击打（`sim_shooter.py`）
+
+进程内模拟，沿用原击打接口 `/shoot`（`std_msgs/String`，命令 `shoot` / `stopshoot`）：发一次 `shoot` 再发 `stopshoot`，可中断；反馈含 `run_id/waypoint/target_id/shot_id/backend=simulated/success/reason`，`hit` 恒为 `null`。结果由 `task.yaml` 的 `shooter.success` 配置（`false` 可模拟击打失败）。**不代表真实命中**。
+
+### 13.6 任务参数（`config/task.yaml`）
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `output_frame` | `camera_optical_frame` | 检测结果坐标系 |
+| `control_rate` / `kp` / `max_angular_rate` | 20 / 1.0 / 0.35 | 对准控制环（Hz / 比例增益 / 角速度上限 rad/s） |
+| `search_rate` | 0.15 | 无目标时的低速搜索角速度 rad/s |
+| `align_tolerance` / `stable_frames` | 0.035 / 3 | 对准阈值 rad / 稳定帧数 |
+| `detection_max_age` / `receive_max_age` | 0.3 / 0.5 | 图像时间戳 / 墙上接收年龄上限 s |
+| `task_timeout` / `settle_timeout` | 20 / 3 | 整个任务 / 停车稳定超时 s |
+| `odom_max_age` / `odom_max_linear` / `odom_max_angular` | 0.5 / 0.05 / 0.05 | 稳定判定阈值 |
+| `shooter` | 见文件 | 模拟击打后端（topic/脉冲/延迟/结果） |
+
+以上均为**测试初值**，非正式比赛参数。
+
+### 13.7 启动（Ubuntu）
+
+```bash
+source /opt/ros/melodic/setup.bash
+cd catkin_ws
+catkin_make
+source devel/setup.bash
+
+# 一键：仿真 + 导航栈 + AR 检测 + 任务管理器（识别/对准/模拟击打）
+roslaunch aigc_navigation task_mission_sim.launch
+
+# 无界面 / 无 RViz
+roslaunch aigc_navigation task_mission_sim.launch gui:=false rviz:=false
+```
+
+原第三轮启动方式不变：`mission_sim.launch`（`execute_tasks=false`，纯导航）与 `send_goal.py` 仍可单独使用。`task_mission_sim.launch` 内部包含 `nav_sim.launch`（仿真 + 导航栈）与 `ar_detector.launch`，Gazebo/导航/RViz **不重复启动**。
+
+## 14. 尚未完成的功能
+
 - 大模型服务
-- 正式比赛场地与真实机器人模型（当前为临时测试参数与基础几何体）
+- 正式比赛场地、正式比赛靶与真实机器人模型（当前为临时测试参数、测试靶与基础几何体）
+- 真实击打硬件/串口驱动（当前为进程内模拟，无弹道/射线命中检测）
 
-## 14. 待 Ubuntu 验证的内容
+## 15. 待 Ubuntu 验证的内容
 
 本轮在 Windows 上仅做了静态检查（XML/YAML 语法、脚本编译、文件引用与参数一致性、替身分支检查、航点碰撞核对等），**尚未在 Ubuntu 上实际运行**。以下内容待 Ubuntu 验证，详见 `docs/verification.md`：
 
@@ -438,3 +535,8 @@ roslaunch aigc_navigation mission.launch
 - `send_goal.py` 导航到目标点并返回 `SUCCEEDED`
 - `mission_manager` 依次导航全部航点并到达 `finish`（退出码 0、记录 COMPLETED）
 - 航点失败重试与 `failure_policy` 停止/跳过、超时取消确认、中断退出 130、运行记录写入与不覆盖
+- AR 测试靶纹理在 Gazebo 中正确显示（无镜像/倒置，检测方向正确）
+- `ar_track_alvar` 识别到 ID0/1/2，`/ar_pose_marker` 的 marker 自身 header（stamp/frame_id）正确
+- 检测双重新鲜度、同帧不重复计数、目标丢失清零、转向符号（偏右 → 负角速度）在实车上成立
+- 对准稳定计数与模拟击打反馈、每点最多一次击打、模拟失败不记为任务成功
+- `execute_tasks=true` 三点任务 + `finish` 全流程（退出码 0、记录 COMPLETED）；`execute_tasks=false` 原纯导航流程不回归

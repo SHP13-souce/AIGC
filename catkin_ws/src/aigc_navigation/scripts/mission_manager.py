@@ -53,8 +53,24 @@ OUT_LOST = 'lost'
 OUT_CANCEL_UNCONFIRMED = 'cancel_unconfirmed'
 OUT_SHUTDOWN = 'shutdown'
 
+# Task result statuses returned by aigc_navigation.task_executor.execute().
+TASK_OK = 'success'
+TASK_INTERRUPTED = 'interrupted'
+
 _VALID_KINDS = ('task', 'transit', 'finish')
 _VALID_POLICIES = ('stop', 'skip')
+
+# Default task -> AR target-id mapping when a task waypoint has no explicit
+# target_id. Test targets only, not the official competition targets.
+DEFAULT_TARGET_IDS = {'task_1': 0, 'task_2': 1, 'task_3': 2}
+
+
+def _resolve_target_id(wp):
+    """Return the target id for a task waypoint, or None if unresolved."""
+    tid = wp.get('target_id')
+    if tid is None:
+        tid = DEFAULT_TARGET_IDS.get(wp['name'])
+    return tid
 
 
 class MissionRunner(object):
@@ -68,6 +84,9 @@ class MissionRunner(object):
         self.skipped_any = False
         self.in_progress_wp = None
         self.in_progress_attempts = 0
+        self.task_cfg = None
+        self.task_executor = None
+        self.shot_waypoints = set()
         self.run_id = 'aigc_%s_%s' % (
             time.strftime('%Y%m%dT%H%M%S'), uuid.uuid4().hex[:8])
         self.start_wall = wall_time()
@@ -80,6 +99,11 @@ class MissionRunner(object):
             self.client.cancel_and_stop()
         except Exception:
             pass
+        if self.task_executor is not None:
+            try:
+                self.task_executor.cleanup()
+            except Exception:
+                pass
 
     # -- readiness --------------------------------------------------------
     def wait_ready(self):
@@ -218,9 +242,20 @@ class MissionRunner(object):
                 break
             time.sleep(0.05)
 
+    # -- task execution ---------------------------------------------------
+    def _run_task(self, wp, target_id, allow_shot):
+        """Run the AR task for one waypoint (lazy import of TaskExecutor)."""
+        if self.task_executor is None:
+            # Lazy import keeps ar_track_alvar out of the pure-navigation path.
+            from aigc_navigation.task_executor import TaskExecutor
+            self.task_executor = TaskExecutor(self.task_cfg)
+        return self.task_executor.execute(self.run_id, wp['name'], target_id,
+                                          allow_shot)
+
     # -- record -----------------------------------------------------------
-    def _record(self, wp, result, attempts, reason):
-        self.records.append({
+    def _record(self, wp, result, attempts, reason, navigation_result=None,
+                target_id=None, task=None):
+        rec = {
             'name': wp['name'],
             'kind': wp['kind'],
             'x': wp['x'],
@@ -229,13 +264,24 @@ class MissionRunner(object):
             'attempts': attempts,
             'result': result,
             'reason': reason,
-        })
+        }
+        if navigation_result is not None:
+            rec['navigation_result'] = navigation_result
+        if target_id is not None:
+            rec['target_id'] = target_id
+        if task is not None:
+            rec['task'] = task
+        self.records.append(rec)
 
     def record_interrupt(self, reason):
         """Record the in-progress waypoint (if any) as interrupted."""
         if self.in_progress_wp is not None:
-            self._record(self.in_progress_wp, WP_INTERRUPTED,
-                         self.in_progress_attempts, reason)
+            wp = self.in_progress_wp
+            target_id = None
+            if wp.get('kind') == 'task' and self.cfg.get('execute_tasks'):
+                target_id = _resolve_target_id(wp)
+            self._record(wp, WP_INTERRUPTED, self.in_progress_attempts, reason,
+                         target_id=target_id)
             self.in_progress_wp = None
 
     # -- main flow --------------------------------------------------------
@@ -248,6 +294,8 @@ class MissionRunner(object):
                          self.cfg['ready_timeout'])
             self.cleanup()
             return (1, STATUS_FAILED, 'navigation not ready')
+
+        execute_tasks = bool(self.cfg.get('execute_tasks'))
 
         for wp in self.cfg['waypoints']:
             if is_shutdown():
@@ -269,50 +317,62 @@ class MissionRunner(object):
                 return (130, STATUS_STOPPED, res['reason'])
 
             if res['status'] == OUT_LOST:
-                self._record(wp, WP_FAILED, res['attempts'], 'lost')
+                self._record(wp, WP_FAILED, res['attempts'], 'lost',
+                             navigation_result='failed')
                 rospy.logerr('Waypoint %s: LOST (connection unclear); '
                              'stopping the run.' % wp['name'])
                 self.cleanup()
                 return (2, STATUS_FAILED, 'lost connection')
 
             if res['status'] == OUT_CANCEL_UNCONFIRMED:
-                self._record(wp, WP_FAILED, res['attempts'], res['reason'])
+                self._record(wp, WP_FAILED, res['attempts'], res['reason'],
+                             navigation_result='failed')
                 rospy.logerr('Waypoint %s: %s; stopping the run.' %
                              (wp['name'], res['reason']))
                 self.cleanup()
                 return (2, STATUS_FAILED, res['reason'])
 
             if res['status'] == WP_SUCCESS:
-                self._record(wp, WP_SUCCESS, res['attempts'], '')
+                if wp['kind'] == 'task' and execute_tasks:
+                    stop = self._run_task_waypoint(wp, res['attempts'])
+                    if stop is not None:
+                        return stop
+                    continue
+
+                self._record(wp, WP_SUCCESS, res['attempts'], '',
+                             navigation_result='success')
                 rospy.loginfo('Waypoint %s reached (attempts=%d).' %
                               (wp['name'], res['attempts']))
                 if wp['kind'] == 'task':
                     self.on_task_reached(wp)
                 continue
 
-            # WP_FAILED: ordinary failure after retries exhausted.
+            # WP_FAILED: ordinary navigation failure after retries exhausted.
             kind = wp['kind']
             if kind == 'transit':
-                self._record(wp, WP_FAILED, res['attempts'], res['reason'])
+                self._record(wp, WP_FAILED, res['attempts'], res['reason'],
+                             navigation_result='failed')
                 rospy.logerr('Transit waypoint %s failed; stopping the run.' %
                              wp['name'])
                 self.cleanup()
                 return (2, STATUS_FAILED, 'transit failed')
             if kind == 'finish':
-                self._record(wp, WP_FAILED, res['attempts'], res['reason'])
+                self._record(wp, WP_FAILED, res['attempts'], res['reason'],
+                             navigation_result='failed')
                 rospy.logerr('Finish waypoint %s failed; run NOT completed.' %
                              wp['name'])
                 self.cleanup()
                 return (2, STATUS_FAILED, 'finish failed')
             if self.cfg['failure_policy'] == 'stop':
-                self._record(wp, WP_FAILED, res['attempts'], res['reason'])
+                self._record(wp, WP_FAILED, res['attempts'], res['reason'],
+                             navigation_result='failed')
                 rospy.logerr('Task waypoint %s failed; stopping '
                              '(failure_policy=stop).' % wp['name'])
                 self.cleanup()
                 return (2, STATUS_FAILED, 'task failed (stop)')
             # task + skip policy
             self._record(wp, WP_SKIPPED, res['attempts'],
-                         'skipped after failure')
+                         'skipped after failure', navigation_result='failed')
             self.skipped_any = True
             rospy.logwarn('Task waypoint %s failed; skipping '
                           '(failure_policy=skip).' % wp['name'])
@@ -323,6 +383,56 @@ class MissionRunner(object):
         self.cleanup()
         return (0, STATUS_COMPLETED, '')
 
+    def _run_task_waypoint(self, wp, attempts):
+        """Run the AR task after a task waypoint's navigation succeeded.
+
+        Returns a (exit_code, status, reason) tuple to stop the run, or None
+        to continue to the next waypoint. Records navigation_result, task
+        result, alignment and the simulated shot for the waypoint.
+        """
+        target_id = _resolve_target_id(wp)
+        allow_shot = wp['name'] not in self.shot_waypoints
+        self.in_progress_wp = wp
+        self.in_progress_attempts = attempts
+        task = self._run_task(wp, target_id, allow_shot)
+        self.in_progress_wp = None
+        if task['shot'] is not None:
+            self.shot_waypoints.add(wp['name'])
+
+        if task['status'] == TASK_INTERRUPTED:
+            self._record(wp, WP_INTERRUPTED, attempts, task['reason'],
+                         navigation_result='success', target_id=target_id,
+                         task=task)
+            rospy.logwarn('Waypoint %s task interrupted; stopping.' % wp['name'])
+            self.cleanup()
+            return (130, STATUS_STOPPED, task['reason'])
+
+        if task['status'] == TASK_OK:
+            self._record(wp, WP_SUCCESS, attempts, '',
+                         navigation_result='success', target_id=target_id,
+                         task=task)
+            rospy.loginfo('Waypoint %s task succeeded (target %d).' %
+                          (wp['name'], target_id))
+            return None
+
+        # Task failed / timed out: apply the failure policy.
+        if self.cfg['failure_policy'] == 'stop':
+            self._record(wp, WP_FAILED, attempts, task['reason'],
+                         navigation_result='success', target_id=target_id,
+                         task=task)
+            rospy.logerr('Task %s failed (%s); stopping '
+                         '(failure_policy=stop).' % (wp['name'], task['reason']))
+            self.cleanup()
+            return (2, STATUS_FAILED, task['reason'])
+
+        self._record(wp, WP_SKIPPED, attempts, task['reason'],
+                     navigation_result='success', target_id=target_id,
+                     task=task)
+        self.skipped_any = True
+        rospy.logwarn('Task %s failed (%s); skipping '
+                      '(failure_policy=skip).' % (wp['name'], task['reason']))
+        return None
+
     # -- save the run record ---------------------------------------------
     def save_record(self, exit_code, final_status, reason):
         record = {
@@ -331,6 +441,8 @@ class MissionRunner(object):
             'end_time': time.strftime('%Y-%m-%dT%H:%M:%S'),
             'status': final_status,
             'exit_code': exit_code,
+            'mission_mode': 'task' if self.cfg.get('execute_tasks')
+                            else 'navigation',
             'reason': reason,
             'duration_sec': round(wall_time() - self.start_wall, 3),
             'waypoints': self.records,
@@ -361,8 +473,50 @@ def load_config():
         'max_retries': rospy.get_param('~max_retries', 1),
         'failure_policy': rospy.get_param('~failure_policy', 'stop'),
         'dwell_time': rospy.get_param('~dwell_time', 0.5),
+        'execute_tasks': rospy.get_param('~execute_tasks', False),
         'waypoints': rospy.get_param('~waypoints', []),
         'log_dir': rospy.get_param('~log_dir', ''),
+    }
+
+
+def load_task_config():
+    """Read AR task parameters from the node's ~task private namespace.
+
+    Called only when execute_tasks is enabled; every value has a default so
+    this never fails even if task.yaml was not loaded.
+    """
+    return {
+        'output_frame': rospy.get_param('~task/output_frame',
+                                        'camera_optical_frame'),
+        'ar_marker_topic': rospy.get_param('~task/ar_marker_topic',
+                                           '/ar_pose_marker'),
+        'odom_topic': rospy.get_param('~task/odom_topic', '/odom'),
+        'control_rate': rospy.get_param('~task/control_rate', 20.0),
+        'kp': rospy.get_param('~task/kp', 1.0),
+        'max_angular_rate': rospy.get_param('~task/max_angular_rate', 0.35),
+        'search_rate': rospy.get_param('~task/search_rate', 0.15),
+        'align_tolerance': rospy.get_param('~task/align_tolerance', 0.035),
+        'stable_frames': rospy.get_param('~task/stable_frames', 3),
+        'detection_max_age': rospy.get_param('~task/detection_max_age', 0.3),
+        'receive_max_age': rospy.get_param('~task/receive_max_age', 0.5),
+        'task_timeout': rospy.get_param('~task/task_timeout', 20.0),
+        'settle_timeout': rospy.get_param('~task/settle_timeout', 3.0),
+        'odom_max_age': rospy.get_param('~task/odom_max_age', 0.5),
+        'odom_max_linear': rospy.get_param('~task/odom_max_linear', 0.05),
+        'odom_max_angular': rospy.get_param('~task/odom_max_angular', 0.05),
+        'stop_publish_count': rospy.get_param('~task/stop_publish_count', 3),
+        'stop_publish_interval':
+            rospy.get_param('~task/stop_publish_interval', 0.05),
+        'shooter': {
+            'topic': rospy.get_param('~task/shooter/topic', '/shoot'),
+            'pulse_duration':
+                rospy.get_param('~task/shooter/pulse_duration', 0.2),
+            'delay': rospy.get_param('~task/shooter/delay', 0.1),
+            'success': rospy.get_param('~task/shooter/success', True),
+            'failure_reason':
+                rospy.get_param('~task/shooter/failure_reason',
+                                'simulated failure'),
+        },
     }
 
 
@@ -421,6 +575,16 @@ def validate_config(cfg):
             elif math.isnan(v) or math.isinf(v):
                 errors.append('waypoint %d %s must be finite' % (i, key))
 
+    if cfg.get('execute_tasks'):
+        # Task mode: every task waypoint must resolve to a valid target id.
+        for i, wp in enumerate(wps):
+            if not isinstance(wp, dict) or wp.get('kind') != 'task':
+                continue
+            tid = _resolve_target_id(wp)
+            if isinstance(tid, bool) or not isinstance(tid, int) or tid < 0:
+                errors.append('task waypoint %d (%r) has no valid target_id'
+                              % (i, wp.get('name')))
+
     if not isinstance(wps[-1], dict) or wps[-1].get('kind') != 'finish':
         errors.append('the last waypoint must be kind: finish')
 
@@ -450,6 +614,9 @@ def main():
                          '; '.join(errors))
             runner.save_record(1, STATUS_FAILED, 'config error')
             sys.exit(1)
+
+        if cfg.get('execute_tasks'):
+            runner.task_cfg = load_task_config()
 
         exit_code, final_status, reason = runner.run()
     except KeyboardInterrupt:

@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<launch>
+
+  <!-- One-shot full task mission: Gazebo simulation + navigation stack + AR
+       detector + task-enabled mission manager. Gazebo, the navigation nodes
+       and RViz are NOT started twice (nav_sim.launch owns them). -->
+
+  <arg name="gui"          default="true"/>
+  <arg name="rviz"         default="true"/>
+  <arg name="paused"       default="false"/>
+  <arg name="mission_file" default="$(find aigc_navigation)/config/mission.yaml"/>
+  <arg name="task_file"    default="$(find aigc_navigation)/config/task.yaml"/>
+  <arg name="log_dir"      default=""/>
+
+  <!-- Simulation + navigation stack (sim.launch + navigation.launch). -->
+  <include file="$(find aigc_navigation)/launch/nav_sim.launch">
+    <arg name="gui"    value="$(arg gui)"/>
+    <arg name="rviz"   value="$(arg rviz)"/>
+    <arg name="paused" value="$(arg paused)"/>
+  </include>
+
+  <!-- AR test-target detection. -->
+  <include file="$(find aigc_navigation)/launch/ar_detector.launch"/>
+
+  <!-- Task-enabled mission manager. execute_tasks=true enables AR
+       recognize/align/shoot; the task params are loaded into ~task. -->
+  <node name="mission_manager" pkg="aigc_navigation" type="mission_manager.py"
+        output="screen" required="false">
+    <rosparam file="$(arg mission_file)" command="load"/>
+    <rosparam file="$(arg task_file)" command="load" ns="task"/>
+    <param name="execute_tasks" value="true"/>
+    <param name="log_dir" value="$(arg log_dir)"/>
+  </node>
+
+</launch>
