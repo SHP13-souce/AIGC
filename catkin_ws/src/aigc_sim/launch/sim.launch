@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<launch>
+
+  <!-- Simulation options -->
+  <arg name="gui"    default="true"/>
+  <arg name="rviz"   default="true"/>
+  <arg name="paused" default="false"/>
+  <arg name="world"  default="$(find aigc_sim)/worlds/test.world"/>
+
+  <!-- Use simulated clock for all nodes. -->
+  <param name="/use_sim_time" value="true"/>
+
+  <!-- Start Gazebo with the test world. -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name"   value="$(arg world)"/>
+    <arg name="paused"       value="$(arg paused)"/>
+    <arg name="use_sim_time" value="true"/>
+    <arg name="gui"          value="$(arg gui)"/>
+    <arg name="headless"     value="false"/>
+    <arg name="verbose"      value="false"/>
+  </include>
+
+  <!-- Build robot_description from xacro. -->
+  <param name="robot_description"
+         command="$(find xacro)/xacro '$(find aigc_description)/urdf/robot.urdf.xacro'"/>
+
+  <!-- Spawn the robot into Gazebo (lifted slightly to avoid initial ground penetration). -->
+  <node name="spawn_aigc_robot" pkg="gazebo_ros" type="spawn_model"
+        args="-param robot_description -urdf -model aigc_robot -x 0.0 -y 0.0 -z 0.02 -Y 0.0"
+        output="screen"/>
+
+  <!-- Publish TF from the URDF joints / joint_states. -->
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher">
+    <param name="publish_frequency" type="double" value="30.0"/>
+  </node>
+
+  <!-- Optional RViz. -->
+  <group if="$(arg rviz)">
+    <node name="rviz" pkg="rviz" type="rviz"
+          args="-d $(find aigc_sim)/rviz/sim.rviz"
+          required="false"/>
+  </group>
+
+</launch>

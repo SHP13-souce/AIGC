@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>aigc_sim</name>
+  <version>0.0.1</version>
+  <description>Simulation launch files, test world and RViz configuration for the AIGC unmanned vehicle challenge.</description>
+  <maintainer email="aigc@example.com">AIGC Team</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <exec_depend>aigc_description</exec_depend>
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>gazebo_plugins</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>rviz</exec_depend>
+
+  <export>
+  </export>
+</package>

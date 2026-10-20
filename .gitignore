@@ -1,0 +1,21 @@
+# Catkin build outputs (generated on Ubuntu)
+catkin_ws/build/
+catkin_ws/devel/
+catkin_ws/install/
+
+# Logs
+*.log
+logs/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Editor / OS temporary files
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db

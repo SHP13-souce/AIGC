@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>aigc_description</name>
+  <version>0.0.1</version>
+  <description>Minimal differential-drive robot URDF/xacro model for the AIGC unmanned vehicle challenge (temporary test model built from basic primitives).</description>
+  <maintainer email="aigc@example.com">AIGC Team</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>gazebo_plugins</exec_depend>
+  <exec_depend>urdf</exec_depend>
+
+  <export>
+  </export>
+</package>
