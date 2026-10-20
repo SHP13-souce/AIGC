@@ -9,7 +9,7 @@ stable counting and pre-shoot firing gate. Positive task tests feed data
 through the real ``_on_markers`` / ``_on_odom`` callbacks and run the real code
 path; the key judgments are NOT stubbed to True.
 
-Coverage (16 groups):
+Coverage (17 groups):
   0  marker patterns / committed PNG / map PGM consistent
   1  detection freshness (zero / pre-task / backward-stale / stale rejected)
   2  stable counting (same-frame no double count; A,B,A != 3)
@@ -27,6 +27,7 @@ Coverage (16 groups):
   13 stability reset on movement (alternating settle/move never accumulates)
   14 shoot/stopshoot publish failures -> failed, not success
   15 shutdown during cleanup -> interrupted / mission 130 STOPPED
+  16 preserve shot records during cleanup interruption
 
 Exit code 0 means all checks passed.
 """
@@ -1174,6 +1175,92 @@ def test_cleanup_interrupt():
 
 
 # --------------------------------------------------------------------------
+# Group 16: preserve shot records during cleanup interruption
+# --------------------------------------------------------------------------
+def _arm_cleanup_shutdown(e):
+    """Drive a full task via real callbacks, then shut down once the shot is
+    complete (i.e. on the next sleep, which lands in the finally _stop())."""
+    state = {'shot_done': False}
+
+    def feed():
+        e._on_odom(make_odom(CLOCK.rostime))
+        e._on_markers(make_markers([make_marker(0, CLOCK.rostime, x=0.0,
+                                                z=1.0)]))
+
+    real_shoot = e._shooter.shoot
+
+    def wrapped_shoot(*args, **kwargs):
+        res = real_shoot(*args, **kwargs)
+        state['shot_done'] = True
+        return res
+
+    e._shooter.shoot = wrapped_shoot
+
+    def shutdown_after_shot():
+        if state['shot_done']:
+            CLOCK.shutdown = True
+
+    SLEEP_HOOKS.append(feed)
+    SLEEP_HOOKS.append(shutdown_after_shot)
+
+
+def test_shot_record_preserved():
+    print('[16] preserve shot during cleanup interrupt')
+    reset()
+    CLOCK.now = 100.0
+    CLOCK.rostime = 100.0
+
+    # (a) successful shot, then shutdown during cleanup: shot preserved.
+    e = make_executor()
+    _arm_cleanup_shutdown(e)
+    res = e.execute('r1', 'task_1', 0, allow_shot=True)
+    SLEEP_HOOKS[:] = []
+    check(res['status'] == TASK_INTERRUPTED,
+          'success shot + cleanup shutdown -> interrupted')
+    check(res['shot'] is not None and res['shot']['status'] == 'success',
+          'successful shot preserved in the interrupted result')
+    CLOCK.shutdown = False
+
+    # (b) simulated-failure shot, then shutdown during cleanup: shot preserved
+    #     with its original failed feedback (not rewritten to success).
+    reset()
+    CLOCK.now = 100.0
+    CLOCK.rostime = 100.0
+    e = make_executor(task_cfg(shooter={'topic': '/shoot', 'pulse_duration':
+                                        0.2, 'delay': 0.1, 'success': False,
+                                        'failure_reason': 'simulated failure'}))
+    _arm_cleanup_shutdown(e)
+    res = e.execute('r1', 'task_1', 0, allow_shot=True)
+    SLEEP_HOOKS[:] = []
+    check(res['status'] == TASK_INTERRUPTED,
+          'failed shot + cleanup shutdown -> interrupted')
+    check(res['shot'] is not None and res['shot']['status'] == 'failed',
+          'failed shot preserved in the interrupted result')
+    CLOCK.shutdown = False
+
+    # (c) mission-level: interrupted result carrying a shot -> 130 / STOPPED,
+    #     and the waypoint is registered in shot_waypoints.
+    reset()
+    CLOCK.now = 100.0
+    CLOCK.rostime = 100.0
+    runner = mission_manager.MissionRunner(_mission_cfg(
+        execute_tasks=True, failure_policy='skip'))
+    runner.task_cfg = task_cfg()
+    runner.task_executor = make_executor()
+    _arm_cleanup_shutdown(runner.task_executor)
+    wp = {'name': 'task_1', 'kind': 'task', 'x': 0.0, 'y': 0.0, 'yaw': 0.0,
+          'target_id': 0}
+    ret = runner._run_task_waypoint(wp, 1)
+    SLEEP_HOOKS[:] = []
+    CLOCK.shutdown = False
+    check(ret is not None and ret[0] == 130 and
+          ret[1] == mission_manager.STATUS_STOPPED,
+          'shot-preserving cleanup shutdown -> 130 / STOPPED')
+    check('task_1' in runner.shot_waypoints,
+          'waypoint registered in shot_waypoints')
+
+
+# --------------------------------------------------------------------------
 def main():
     test_static_data()
     test_detection_freshness()
@@ -1191,6 +1278,7 @@ def main():
     test_stability_reset()
     test_publish_failure()
     test_cleanup_interrupt()
+    test_shot_record_preserved()
 
     print('')
     if FAILURES:

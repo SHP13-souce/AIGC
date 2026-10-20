@@ -362,10 +362,13 @@ class TaskExecutor(object):
 
         # A shutdown that lands during the cleanup above is still an
         # interrupt, and takes priority over a prior failure/timeout/skip.
+        # Preserve any already-completed shot (and its feedback) rather than
+        # wiping it: an interrupt must not erase a fired shot.
         if is_shutdown() and result is not None and \
                 result['status'] != TASK_INTERRUPTED:
             result = self._result(TASK_INTERRUPTED,
-                                  result.get('aligned', False), None,
+                                  result.get('aligned', False),
+                                  result.get('shot'),
                                   'interrupted during cleanup')
         return result
 

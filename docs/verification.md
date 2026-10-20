@@ -485,3 +485,41 @@ Windows 重新检查（本轮修复，均已实际执行；用简单替身 stub 
 - [ ] 任务清理期间 shutdown → 任务 `interrupted`、任务管理器退出 130 / STOPPED（优先于 skip）
 - [ ] `execute_tasks=true` 三点任务 + `finish` 全流程退出码 0；`execute_tasks=false` 原纯导航流程不回归
 
+---
+
+## 第七轮：修复清理中断时射击记录丢失
+
+本轮**只修复第六轮（提交 `63920c5`）的清理中断记录问题，不新增比赛功能**。
+
+起始（基线）commit：`63920c5bf6df1c23705690054151054f78bdd0ae`
+
+> 本轮只做一次本地提交；**未在 Ubuntu 实际运行，全程仿真尚未跑通**。
+
+### A. 本轮修复内容（第七轮）
+
+上一版 `task_executor.py` 的 `execute` 在 `finally` 后把结果覆盖为 `TASK_INTERRUPTED` 时，`_result` 的第三参数误写为 `None`，导致已完成的射击反馈被抹掉：任务返回 `interrupted` 但 `shot=None`，任务管理器也无法登记射击额度。
+
+已改为把该处第三参数改为 `result.get('shot')`：覆盖状态为 `interrupted` 时保留 `result` 中已有的 `shot`（以及已有的 `aligned`），不抹掉已发生的射击、不改写其原始反馈。
+
+### B. Windows 已实际执行的检查（第七轮）
+
+| # | 检查项 | 命令 / 方法 | 结果 |
+| --- | --- | --- | --- |
+| 1 | Python 语法 | `python -m py_compile`（task_executor.py、regression_test.py） | 通过 |
+| 2 | 集中回归 | `python tools/regression_test.py`，**84 项断言全部通过** | 通过 |
+| 3 | `git diff --check`、UTF-8 / LF | 空白检查 + 逐文件 | 通过 |
+
+### C. 新增复现用例（第七轮，不依赖 ROS，**不代表 ROS 实际运行通过**）
+
+正向用例继续通过真实检测/里程计回调喂入数据，运行真实过滤、计数与最终击打判断，关键判定未替换为固定 True：
+
+- [x] **射击成功后清理中断**：真实回调驱动完成 `shoot`/`stopshoot` 后，`finally` 零速度停车期间 shutdown → 任务返回 `interrupted`，且 `shot` 保留、`shot.status == success`
+- [x] **模拟射击失败后清理中断**：`shooter.success=false` 下同样场景 → 任务返回 `interrupted`，且 `shot` 保留、`shot.status == failed`（未被改写为成功）
+- [x] **任务管理器层**：带 `shot` 的 `interrupted` 结果经 `_run_task_waypoint` → 退出 130 / STOPPED，且该航点登记到 `shot_waypoints`
+
+### D. 待 Ubuntu 执行的验证（第七轮）
+
+以下全部**待执行**，本轮不以下列项目通过作为提交前提；**未在 Ubuntu 实际运行，全程仿真尚未跑通**：
+
+- [ ] 实车上「射击完成后清理期 shutdown」时，任务记录保留射击反馈、任务管理器退出 130 / STOPPED 并登记射击额度
+
