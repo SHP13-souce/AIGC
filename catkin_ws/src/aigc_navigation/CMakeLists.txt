@@ -26,6 +26,7 @@ catkin_package()
 catkin_install_python(PROGRAMS
   scripts/send_goal.py
   scripts/mission_manager.py
+  scripts/check_vendor_interfaces.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

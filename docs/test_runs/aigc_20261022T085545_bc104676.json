@@ -1,0 +1,155 @@
+{
+  "duration_sec": 82.23,
+  "end_time": "2026-10-22T08:57:07",
+  "exit_code": 0,
+  "integration": {
+    "backend": "vendor_interfaces_dry_run",
+    "hit": null,
+    "recognition": {
+      "reason": "",
+      "selection": {
+        "fruit": 6,
+        "math": 1
+      },
+      "status": "success"
+    },
+    "selection": {
+      "fruit": 6,
+      "math": 1
+    },
+    "voice": [
+      {
+        "backend": "topic",
+        "result": {
+          "audible": null,
+          "delivery": "published",
+          "reason": "",
+          "status": "success"
+        },
+        "text": "\u8bc6\u522b\u5b8c\u6210\uff0c\u6570\u5b66\u7b54\u6848\u4e3a1\uff0c\u6c34\u679c\u7f16\u7801\u4e3a6\u3002"
+      },
+      {
+        "backend": "topic",
+        "result": {
+          "audible": null,
+          "delivery": "published",
+          "reason": "",
+          "status": "success"
+        },
+        "text": "\u5df2\u5230\u8fbe\u7ec8\u70b9\uff0c\u4efb\u52a1\u7ed3\u675f\u3002"
+      }
+    ]
+  },
+  "mission_mode": "competition_dry_run",
+  "reason": "",
+  "run_id": "aigc_20261022T085545_bc104676",
+  "start_time": "2026-10-22T08:55:45",
+  "status": "COMPLETED",
+  "waypoints": [
+    {
+      "attempts": 1,
+      "kind": "task",
+      "name": "task_1",
+      "navigation_result": "success",
+      "reason": "",
+      "result": "success",
+      "target_id": 113,
+      "target_source": "object",
+      "task": {
+        "aligned": true,
+        "detection_freshness": "receive_time_only_no_image_header",
+        "dry_run": true,
+        "reason": "",
+        "shot": {
+          "backend": "simulated",
+          "hit": null,
+          "reason": "",
+          "run_id": "aigc_20261022T085545_bc104676",
+          "shot_id": "aigc_20261022T085545_bc104676_task_1",
+          "status": "success",
+          "success": true,
+          "target_id": 113,
+          "waypoint": "task_1"
+        },
+        "status": "success",
+        "target_source": "object"
+      },
+      "x": 1.2,
+      "y": 0.0,
+      "yaw": 1.57079632679
+    },
+    {
+      "attempts": 1,
+      "kind": "task",
+      "name": "task_2",
+      "navigation_result": "success",
+      "reason": "",
+      "result": "success",
+      "target_id": 1,
+      "target_source": "math",
+      "task": {
+        "aligned": true,
+        "dry_run": true,
+        "reason": "",
+        "shot": {
+          "backend": "simulated",
+          "hit": null,
+          "reason": "",
+          "run_id": "aigc_20261022T085545_bc104676",
+          "shot_id": "aigc_20261022T085545_bc104676_task_2",
+          "status": "success",
+          "success": true,
+          "target_id": 1,
+          "waypoint": "task_2"
+        },
+        "status": "success",
+        "target_source": "math"
+      },
+      "x": 1.2,
+      "y": 1.0,
+      "yaw": 3.14159265359
+    },
+    {
+      "attempts": 1,
+      "kind": "task",
+      "name": "task_3",
+      "navigation_result": "success",
+      "reason": "",
+      "result": "success",
+      "target_id": 6,
+      "target_source": "fruit",
+      "task": {
+        "aligned": true,
+        "dry_run": true,
+        "reason": "",
+        "shot": {
+          "backend": "simulated",
+          "hit": null,
+          "reason": "",
+          "run_id": "aigc_20261022T085545_bc104676",
+          "shot_id": "aigc_20261022T085545_bc104676_task_3",
+          "status": "success",
+          "success": true,
+          "target_id": 6,
+          "waypoint": "task_3"
+        },
+        "status": "success",
+        "target_source": "fruit"
+      },
+      "x": -1.0,
+      "y": 1.0,
+      "yaw": -1.57079632679
+    },
+    {
+      "attempts": 1,
+      "kind": "finish",
+      "name": "finish",
+      "navigation_result": "success",
+      "reason": "",
+      "result": "success",
+      "x": -1.0,
+      "y": -1.0,
+      "yaw": 0.0
+    }
+  ]
+}
