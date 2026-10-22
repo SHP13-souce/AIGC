@@ -234,8 +234,7 @@ class TaskExecutor(object):
                 last_counted = None
                 self._publish_twist(0.0, search_rate)
             else:
-                error = math.atan2(det.pose.pose.position.x,
-                                   det.pose.pose.position.z)
+                error = self._alignment_error(det)
                 if abs(error) > align_tol:
                     # Drifted off target: clear progress, steer.
                     stable = 0
@@ -278,6 +277,10 @@ class TaskExecutor(object):
         return {'status': status, 'aligned': aligned, 'shot': shot,
                 'reason': reason}
 
+    def _alignment_error(self, detection):
+        return math.atan2(detection.pose.pose.position.x,
+                          detection.pose.pose.position.z)
+
     def _final_gate_and_shoot(self, run_id, waypoint, target_id, allow_shot,
                               deadline):
         """Re-confirm every firing condition at the moment of shooting."""
@@ -292,7 +295,7 @@ class TaskExecutor(object):
         if det is None:
             return self._result(TASK_FAILED, True, None,
                                 'target no longer valid before shoot')
-        error = math.atan2(det.pose.pose.position.x, det.pose.pose.position.z)
+        error = self._alignment_error(det)
         if abs(error) > self.cfg['align_tolerance']:
             return self._result(TASK_FAILED, True, None,
                                 'target moved before shoot')

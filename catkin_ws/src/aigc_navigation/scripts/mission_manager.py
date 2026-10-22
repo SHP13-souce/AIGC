@@ -86,6 +86,7 @@ class MissionRunner(object):
         self.in_progress_attempts = 0
         self.task_cfg = None
         self.task_executor = None
+        self.competition = None
         self.shot_waypoints = set()
         self.run_id = 'aigc_%s_%s' % (
             time.strftime('%Y%m%dT%H%M%S'), uuid.uuid4().hex[:8])
@@ -104,6 +105,8 @@ class MissionRunner(object):
                 self.task_executor.cleanup()
             except Exception:
                 pass
+        if self.competition is not None:
+            self.competition.cleanup()
 
     # -- readiness --------------------------------------------------------
     def wait_ready(self):
@@ -245,6 +248,8 @@ class MissionRunner(object):
     # -- task execution ---------------------------------------------------
     def _run_task(self, wp, target_id, allow_shot):
         """Run the AR task for one waypoint (lazy import of TaskExecutor)."""
+        if self.competition is not None:
+            return self.competition.execute_task(self.run_id, wp, allow_shot)
         if self.task_executor is None:
             # Lazy import keeps ar_track_alvar out of the pure-navigation path.
             from aigc_navigation.task_executor import TaskExecutor
@@ -265,6 +270,8 @@ class MissionRunner(object):
             'result': result,
             'reason': reason,
         }
+        if 'target_source' in wp:
+            rec['target_source'] = wp['target_source']
         if navigation_result is not None:
             rec['navigation_result'] = navigation_result
         if target_id is not None:
@@ -296,6 +303,18 @@ class MissionRunner(object):
             return (1, STATUS_FAILED, 'navigation not ready')
 
         execute_tasks = bool(self.cfg.get('execute_tasks'))
+
+        if (isinstance(self.cfg.get('competition'), dict) and
+                self.cfg['competition'].get('enabled')):
+            from aigc_navigation.competition import CompetitionIntegration
+            self.competition = CompetitionIntegration(self.cfg['competition'],
+                                                       self.task_cfg)
+            prepared = self.competition.prepare(self.cfg['waypoints'])
+            if prepared['status'] != TASK_OK:
+                self.cleanup()
+                if prepared['status'] == TASK_INTERRUPTED:
+                    return (130, STATUS_STOPPED, prepared['reason'])
+                return (2, STATUS_FAILED, prepared['reason'])
 
         for wp in self.cfg['waypoints']:
             if is_shutdown():
@@ -339,6 +358,18 @@ class MissionRunner(object):
                         return stop
                     continue
 
+                if wp['kind'] == 'finish' and self.competition is not None:
+                    spoken = self.competition.announce_finish()
+                    if spoken['status'] != TASK_OK:
+                        interrupted = spoken['status'] == TASK_INTERRUPTED
+                        self._record(wp, WP_INTERRUPTED if interrupted else
+                                     WP_FAILED, res['attempts'], spoken['reason'],
+                                     navigation_result='success')
+                        self.cleanup()
+                        return (130 if interrupted else 2,
+                                STATUS_STOPPED if interrupted else STATUS_FAILED,
+                                spoken['reason'])
+
                 self._record(wp, WP_SUCCESS, res['attempts'], '',
                              navigation_result='success')
                 rospy.loginfo('Waypoint %s reached (attempts=%d).' %
@@ -379,8 +410,12 @@ class MissionRunner(object):
 
         if self.skipped_any:
             self.cleanup()
+            if self.competition is not None and is_shutdown():
+                return (130, STATUS_STOPPED, 'shutdown during mission cleanup')
             return (3, STATUS_PARTIAL, 'skipped task waypoints')
         self.cleanup()
+        if self.competition is not None and is_shutdown():
+            return (130, STATUS_STOPPED, 'shutdown during mission cleanup')
         return (0, STATUS_COMPLETED, '')
 
     def _run_task_waypoint(self, wp, attempts):
@@ -447,6 +482,11 @@ class MissionRunner(object):
             'duration_sec': round(wall_time() - self.start_wall, 3),
             'waypoints': self.records,
         }
+        if (isinstance(self.cfg.get('competition'), dict) and
+                self.cfg['competition'].get('enabled')):
+            record['mission_mode'] = 'competition_dry_run'
+            record['integration'] = (self.competition.record if
+                                     self.competition is not None else {})
         log_dir = self.cfg['log_dir']
         try:
             if not os.path.isdir(log_dir):
@@ -476,6 +516,7 @@ def load_config():
         'execute_tasks': rospy.get_param('~execute_tasks', False),
         'waypoints': rospy.get_param('~waypoints', []),
         'log_dir': rospy.get_param('~log_dir', ''),
+        'competition': rospy.get_param('~competition', {}),
     }
 
 
@@ -652,7 +693,20 @@ def validate_config(cfg):
             elif math.isnan(v) or math.isinf(v):
                 errors.append('waypoint %d %s must be finite' % (i, key))
 
-    if cfg.get('execute_tasks'):
+    competition = cfg.get('competition', {})
+    if not isinstance(competition, dict):
+        errors.append('competition must be a dict')
+        competition = {}
+    if not competition.get('enabled') and any(
+            isinstance(wp, dict) and 'target_source' in wp for wp in wps):
+        errors.append('target_source waypoints require competition.enabled=true')
+    if competition.get('enabled'):
+        from aigc_navigation.competition import validate_competition_config
+        errors.extend(validate_competition_config(competition, wps))
+        if not cfg.get('execute_tasks'):
+            errors.append('competition requires execute_tasks=true')
+
+    if cfg.get('execute_tasks') and not competition.get('enabled'):
         # Task mode: every task waypoint must resolve to a valid target id.
         for i, wp in enumerate(wps):
             if not isinstance(wp, dict) or wp.get('kind') != 'task':

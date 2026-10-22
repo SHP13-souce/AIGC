@@ -1,0 +1,39 @@
+# Load into ~competition. External vendor nodes own detection, vision and TTS.
+enabled: true
+dry_run: true
+
+# Intentionally false: the accompanying route uses the OLD TEST MAP.
+# Confirm route/map, template ID and marker numbering on your actual setup,
+# then set true in a separate calibrated profile. This is not an approval flag.
+profile_confirmed: false
+
+# Dual-result abot--01/abot_vlm/scripts/identify.py, not the single-result
+# 2026_demo/abot_vlm/scripts/identify_service.py. std_srvs/Trigger -> "math,fruit".
+vision_service: /fruit_detection
+detect_param: /detect
+recognition_timeout: 120.0
+service_timeout: 5.0
+poll_interval: 0.2
+
+# The supplied packages contain two DIFFERENT voice interfaces.
+# topic: robot_voice/tts_subscribe -> std_msgs/String /voiceWords
+# service: TTS_audio -> TTS_audio/StringService /tts_service
+voice_backend: topic
+voice_topic: /voiceWords
+voice_service: /tts_service
+voice_timeout: 30.0
+voice_success_values: ["TTS处理完成"]
+
+# print_objects_detected_node.cpp: Point.x/y = pixels, Point.z = template ID.
+# 255 is the no-detection sentinel. ID=1 below is an EXAMPLE, not calibrated.
+object_topic: /object_position
+object_target_id: 1
+image_width: 640
+image_height: 480
+object_center_x: 320.0
+object_kp: 0.01
+object_tolerance_px: 3.0
+object_receive_max_age: 0.3
+
+# Never send dry-run pulses to the vendor physical /shoot subscriber.
+dry_run_shoot_topic: /aigc/competition/dry_run/shoot

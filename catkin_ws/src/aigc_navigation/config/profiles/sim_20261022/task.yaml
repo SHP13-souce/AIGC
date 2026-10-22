@@ -1,0 +1,44 @@
+# AR test-target task execution parameters (round 4).
+#
+# Loaded by task_mission_sim.launch into the mission_manager node's ~task
+# private namespace, and read by load_task_config() only when execute_tasks is
+# true. All values are TEST initial values, not the official competition
+# parameters. Coordinates come from the marker header frame (camera_optical_frame:
+# x right, z forward); the bearing error is atan2(x, z).
+
+output_frame: camera_optical_frame
+ar_marker_topic: /ar_pose_marker
+odom_topic: /odom
+
+# In-place alignment control (only angular.z is commanded).
+control_rate: 20.0        # Hz
+kp: 1.0                   # proportional gain (rad/s per rad of bearing error)
+max_angular_rate: 0.35    # rad/s clamp
+search_rate: 0.15         # rad/s low-speed search rotation
+align_tolerance: 0.035    # rad, |error| below this counts as aligned
+stable_frames: 3          # consecutive distinct-image-timestamp aligned frames
+
+# Detection freshness (image-timestamp age + wall-clock receive age).
+detection_max_age: 0.3    # s, max marker.header.stamp age
+receive_max_age: 0.5      # s, max wall-clock age since the message was received
+
+# Whole-task timing.
+task_timeout: 20.0        # s, recognize + align + settle + shoot
+settle_timeout: 3.0       # s, stop-and-settle before/after alignment
+
+# Fresh odometry required before shooting (chassis must be stationary).
+odom_max_age: 0.5         # s
+odom_max_linear: 0.05     # m/s
+odom_max_angular: 0.05    # rad/s
+
+# Zero-velocity publishing on task end.
+stop_publish_count: 3
+stop_publish_interval: 0.05
+
+# Simulated shooter backend (in-process; no serial / real driver).
+shooter:
+  topic: /shoot
+  pulse_duration: 0.2     # s, "shoot" stays active before "stopshoot"
+  delay: 0.1              # s, simulated feedback latency
+  success: true           # simulated backend result (false to test failure)
+  failure_reason: simulated failure

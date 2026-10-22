@@ -1,0 +1,24 @@
+# AIGC TEST WORLD ONLY; not a calibrated real-car profile.
+detect_param: /detect
+dry_run: true
+dry_run_shoot_topic: /aigc/competition/dry_run/shoot
+enabled: true
+image_height: 480
+image_width: 640
+object_center_x: 320.0
+object_kp: 0.002
+object_receive_max_age: 0.5
+object_target_id: 113
+object_tolerance_px: 3.0
+object_topic: /object_position
+poll_interval: 0.2
+profile_confirmed: true
+recognition_timeout: 120.0
+service_timeout: 5.0
+vision_service: /fruit_detection
+voice_backend: topic
+voice_service: /tts_service
+voice_success_values:
+- TTS处理完成
+voice_timeout: 30.0
+voice_topic: /voiceWords

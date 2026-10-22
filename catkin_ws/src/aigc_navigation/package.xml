@@ -28,6 +28,9 @@
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>tf</exec_depend>
   <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>roslib</exec_depend>
+  <exec_depend>rosservice</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>ar_track_alvar</exec_depend>
   <exec_depend>ar_track_alvar_msgs</exec_depend>

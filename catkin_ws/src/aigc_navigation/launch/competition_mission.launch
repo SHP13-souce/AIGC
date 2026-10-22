@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Adapter entry ONLY. Start the vendor sensors/navigation/identify/find/
+       voice nodes separately. Do not start their old mission or alignment
+       controllers alongside this manager (both would own cmd_vel). -->
+  <arg name="mission_file" default="$(find aigc_navigation)/config/competition_mission.example.yaml"/>
+  <arg name="interfaces_file" default="$(find aigc_navigation)/config/competition_interfaces.yaml"/>
+  <arg name="task_file" default="$(find aigc_navigation)/config/task.yaml"/>
+  <arg name="use_sim_time" default="false"/>
+  <arg name="log_dir" default="$(env HOME)/.ros/aigc_competition_check"/>
+  <param name="/use_sim_time" value="$(arg use_sim_time)"/>
+  <node name="mission_manager" pkg="aigc_navigation" type="mission_manager.py" output="screen">
+    <rosparam file="$(arg mission_file)" command="load"/>
+    <rosparam file="$(arg task_file)" command="load" ns="task"/>
+    <rosparam file="$(arg interfaces_file)" command="load" ns="competition"/>
+    <param name="competition/enabled" value="true"/>
+    <param name="execute_tasks" value="true"/>
+    <param name="log_dir" value="$(arg log_dir)"/>
+  </node>
+</launch>
