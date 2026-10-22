@@ -300,7 +300,7 @@
       <odometryTopic>/odom</odometryTopic>
       <odometryFrame>odom</odometryFrame>
       <robotBaseFrame>base_footprint</robotBaseFrame>
-      <odometrySource>encoder</odometrySource>
+      <odometrySource>world</odometrySource>
 
       <publishTf>true</publishTf>
       <publishOdomTF>true</publishOdomTF>

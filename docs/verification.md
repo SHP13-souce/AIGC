@@ -523,3 +523,15 @@ Windows 重新检查（本轮修复，均已实际执行；用简单替身 stub 
 
 - [ ] 实车上「射击完成后清理期 shutdown」时，任务记录保留射击反馈、任务管理器退出 130 / STOPPED 并登记射击额度
 
+
+## Ubuntu 联调实测记录：2026-10-22
+
+依据用户提供的 Ubuntu 虚拟机运行结果：
+- 里程计约 30 Hz、激光约 10 Hz、相机约 15 Hz，运动测试通过。
+- 单点导航返回 SUCCEEDED，退出码 0。
+- encoder 里程计模式下，多航点导航在 task_3 失败，原因仍待排查。
+- 切换 world 里程计后，四个航点全部成功，COMPLETED / 0。
+- 修正三个靶标材质的 emission 和 ambient 后，完整任务通过：
+  三个任务点均 aligned=True、shot_success=True，终点成功。
+- 本次成功基准使用 Gazebo world 真值里程计；射击为模拟反馈。
+  轮速里程计链路、正式比赛靶与实车表现仍待验证。

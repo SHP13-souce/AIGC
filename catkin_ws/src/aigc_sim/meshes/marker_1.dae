@@ -19,6 +19,8 @@
       <profile_COMMON>
         <technique sid="common">
           <lambert>
+            <emission><color>1 1 1 1</color></emission>
+            <ambient><color>1 1 1 1</color></ambient>
             <diffuse>
               <texture texture="marker_1_img" texcoord="UVSET0"/>
             </diffuse>
